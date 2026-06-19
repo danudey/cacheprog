@@ -12,6 +12,7 @@ The guideline for versioning is as follows:
 - If the change is not related to new features i.e. bugfixes, dependency upgrades, etc., increase patch version (e.g. `v1.2.0` -> `v1.2.1`).
 
 ## [Unreleased]
+- **Security**: optional object signing. A signed manifest binds the cache key (`ActionID`) to its output (`OutputID`) and a digest of the stored bytes; objects are signed on upload and verified on download, and an object that fails verification is treated as a cache miss. Configure via `CACHEPROG_SIGNING_*` / `CACHEPROG_SIGNATURE_LOCATION` / `CACHEPROG_REQUIRE_SIGNATURE` (see [README](./README.md#object-signing)). This release supports `hmac-sha256` with the `inline` signature location; `ed25519` and the `metadata` location are planned follow-ups
 - **Security**: verify the integrity of objects downloaded from remote storage by checking that their content hashes to the claimed `OutputID` (SHA-256); objects that fail verification are treated as a cache miss instead of being served to the compiler
 - **Security**: bound writes to disk by the declared object size to prevent decompression bombs from untrusted remote storage exhausting disk; oversized objects are rejected and treated as a cache miss
 - **Security**: reject plaintext `http://` / `minio+http://` remote storage and credentials endpoints by default; add `--allow-insecure-http-remotes` / `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES` to opt back in for local testing. **Breaking for plaintext HTTP setups, including `proxy` mode** — set the override (see [README](./README.md#transport-security))

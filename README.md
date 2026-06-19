@@ -92,6 +92,25 @@ Remote storage endpoints (S3 endpoint, S3 credentials endpoint and HTTP storage 
 
 If you genuinely need plaintext for local testing (e.g. talking to a local Minio or to a `cacheprog proxy` over loopback) set `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true` (flag: `--allow-insecure-http-remotes`). A warning is logged whenever an insecure endpoint is used. **Do not enable this in production.**
 
+#### Object signing
+
+Transport security protects objects in flight, but anyone who can **write** to the storage backend can still place a malicious object under a legitimate cache key and poison every build that fetches it — the Go cache has no built-in authenticity binding between a key and its output. Object signing closes that gap: a small manifest binding the cache key (`ActionID`) to its output (`OutputID`) and a digest of the stored bytes is **signed on upload and verified on download**. An object that fails verification is treated as a cache miss (the compiler rebuilds), so a tampered cache can never inject code into a build.
+
+Only the manifest is signed — never the (larger) payload — so the per-object cost is negligible regardless of algorithm; choose by trust model:
+
+* **`hmac-sha256`** (currently supported): symmetric. Fast and simple. Defends against in-transit tampering and anyone who does not hold the secret. Note that every party able to *verify* also holds the secret and could therefore *forge*, so this is best when all cache participants are equally trusted.
+* **`ed25519`** (asymmetric, planned follow-up): private key signs, public key verifies — use when untrusted readers (e.g. fork/PR jobs) must verify but not forge.
+
+Environment variables:
+* `CACHEPROG_SIGNING_ALGORITHM` - Signing algorithm. Available: `hmac-sha256`. Empty (default) disables signing.
+* `CACHEPROG_SIGNING_KEY` - Signing key material. Prefer the file form below to keep secrets out of the process environment.
+* `CACHEPROG_SIGNING_KEY_FILE` - Path to a file containing the signing key. A single trailing newline is stripped.
+* `CACHEPROG_SIGNING_KEY_ID` - Non-secret identifier of the signing key, used for rotation. Defaults to a digest of the key.
+* `CACHEPROG_SIGNATURE_LOCATION` - Where the signature travels. Available: `inline` (default), which wraps the stored object in a small self-describing container (storage-agnostic and proxy-friendly). A `metadata` location (signature in S3 metadata / HTTP headers) is a planned follow-up.
+* `CACHEPROG_REQUIRE_SIGNATURE` - If `true`, unsigned objects are rejected on fetch instead of passed through. Roll out by signing with this `false` first so the cache refills with signed objects, then flip it to `true`.
+
+The signature is verified before decompression, and the authenticated `UncompressedSize` bounds decompression, so signing also hardens the decompression-bomb protection.
+
 ### S3-compatible storage configuration
 
 Environment variables for S3-compatible storage are:
