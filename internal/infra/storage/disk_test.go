@@ -3,8 +3,10 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -229,4 +231,99 @@ func TestDisk_PutLocal(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "write to file")
 	})
+}
+
+func TestDisk_PutLocal_VerifyOutputID(t *testing.T) {
+	actionID := []byte("test-action-id")
+	data := []byte("test-data")
+	size := int64(len(data))
+	correctOutputID := sha256.Sum256(data)
+
+	t.Run("matching sha256 commits the object", func(t *testing.T) {
+		root, err := NewSystemDiskRoot(t.TempDir())
+		require.NoError(t, err)
+		disk, err := NewDisk(root)
+		require.NoError(t, err)
+
+		resp, err := disk.PutLocal(context.Background(), &cacheprog.LocalPutRequest{
+			ActionID:       actionID,
+			OutputID:       correctOutputID[:],
+			Size:           size,
+			Body:           bytes.NewReader(data),
+			VerifyOutputID: true,
+		})
+
+		require.NoError(t, err)
+		storedData, err := os.ReadFile(resp.DiskPath)
+		require.NoError(t, err)
+		assert.Equal(t, data, storedData)
+	})
+
+	t.Run("mismatching sha256 is rejected and nothing is committed", func(t *testing.T) {
+		root, err := NewSystemDiskRoot(t.TempDir())
+		require.NoError(t, err)
+		disk, err := NewDisk(root)
+		require.NoError(t, err)
+
+		tamperedOutputID := sha256.Sum256([]byte("something-else"))
+
+		_, err = disk.PutLocal(context.Background(), &cacheprog.LocalPutRequest{
+			ActionID:       actionID,
+			OutputID:       tamperedOutputID[:],
+			Size:           size,
+			Body:           bytes.NewReader(data),
+			VerifyOutputID: true,
+		})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, cacheprog.ErrIntegrity)
+
+		// The object must not be readable afterwards: no temp or committed files left behind.
+		_, err = disk.GetLocal(context.Background(), &cacheprog.LocalGetRequest{ActionID: actionID})
+		assert.ErrorIs(t, err, cacheprog.ErrNotFound)
+	})
+
+	t.Run("non-sha256-length OutputID skips verification", func(t *testing.T) {
+		root, err := NewSystemDiskRoot(t.TempDir())
+		require.NoError(t, err)
+		disk, err := NewDisk(root)
+		require.NoError(t, err)
+
+		// A legacy/non-sha256 OutputID (not 32 bytes) must not be rejected.
+		_, err = disk.PutLocal(context.Background(), &cacheprog.LocalPutRequest{
+			ActionID:       actionID,
+			OutputID:       []byte("legacy-object-id"),
+			Size:           size,
+			Body:           bytes.NewReader(data),
+			VerifyOutputID: true,
+		})
+
+		require.NoError(t, err)
+	})
+}
+
+func TestDisk_PutLocal_RejectsOversizedBody(t *testing.T) {
+	// Simulates a decompression bomb: the body produces far more data than the
+	// declared size. writeFile must stop and reject instead of writing it all.
+	actionID := []byte("test-action-id")
+	declaredSize := int64(8)
+	body := bytes.NewReader(bytes.Repeat([]byte("A"), 1024))
+
+	root, err := NewSystemDiskRoot(t.TempDir())
+	require.NoError(t, err)
+	disk, err := NewDisk(root)
+	require.NoError(t, err)
+
+	_, err = disk.PutLocal(context.Background(), &cacheprog.LocalPutRequest{
+		ActionID: actionID,
+		OutputID: []byte("test-output-id"),
+		Size:     declaredSize,
+		Body:     body,
+	})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, cacheprog.ErrObjectTooLarge))
+
+	_, err = disk.GetLocal(context.Background(), &cacheprog.LocalGetRequest{ActionID: actionID})
+	assert.ErrorIs(t, err, cacheprog.ErrNotFound)
 }

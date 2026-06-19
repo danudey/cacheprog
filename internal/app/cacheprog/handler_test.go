@@ -128,10 +128,11 @@ func TestHandler_Handle_Get(t *testing.T) {
 
 		localStorage.EXPECT().
 			PutLocal(gomock.Any(), &LocalPutRequest{
-				ActionID: actionID,
-				OutputID: outputID,
-				Size:     size,
-				Body:     decompressedBody,
+				ActionID:       actionID,
+				OutputID:       outputID,
+				Size:           size,
+				Body:           decompressedBody,
+				VerifyOutputID: true,
 			}).
 			Return(&LocalPutResponse{DiskPath: "/tmp/cache/456"}, nil)
 

@@ -73,6 +73,12 @@ type (
 		OutputID []byte
 		Size     int64
 		Body     io.Reader
+		// VerifyOutputID, when true, makes the local storage verify that the
+		// SHA-256 of the written content equals OutputID before committing the
+		// object. This is used for data coming from untrusted remote storage:
+		// the GOCACHEPROG OutputID is the SHA-256 of the output, so a mismatch
+		// means the object was corrupted or tampered with in transit/at rest.
+		VerifyOutputID bool
 	}
 
 	LocalPutResponse struct {
@@ -100,13 +106,25 @@ type (
 	}
 
 	Statistics struct {
-		GetCalls int64
-		GetHits  int64
-		PutCalls int64
+		GetCalls        int64
+		GetHits         int64
+		PutCalls        int64
+		BytesDownloaded int64
+		BytesUploaded   int64
 	}
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+
+	// ErrIntegrity is returned by local storage when a written object fails
+	// OutputID verification (its content does not hash to the claimed OutputID).
+	ErrIntegrity = errors.New("integrity verification failed")
+
+	// ErrObjectTooLarge is returned by local storage when an object's content
+	// exceeds its declared size, e.g. a decompression bomb from remote storage.
+	ErrObjectTooLarge = errors.New("object exceeds declared size")
+)
 
 type (
 	RemoteStorage interface {
@@ -158,9 +176,11 @@ type Handler struct {
 	disablePut bool
 
 	// counters for statistic output
-	getCalls atomic.Int64
-	getHits  atomic.Int64
-	putCalls atomic.Int64
+	getCalls        atomic.Int64
+	getHits         atomic.Int64
+	putCalls        atomic.Int64
+	bytesDownloaded atomic.Int64 // compressed bytes fetched from remote storage
+	bytesUploaded   atomic.Int64 // compressed bytes pushed to remote storage
 }
 
 type HandlerOptions struct {
@@ -267,6 +287,19 @@ func (h *Handler) handleGet(ctx context.Context, writer cacheproto.ResponseWrite
 
 	defer h.enterGetRemote()()
 
+	h.handleGetRemote(ctx, writer, req)
+}
+
+// handleGetRemote fetches an object from remote storage, decompresses it,
+// verifies its integrity and stores it locally before replying. Any sign that
+// the remote object is untrustworthy (undecompressable, failed OutputID
+// verification, or oversized) is treated as a cache miss so the compiler
+// rebuilds rather than consuming poisoned or corrupt data.
+func (h *Handler) handleGetRemote(ctx context.Context, writer cacheproto.ResponseWriter, req *cacheproto.Request) {
+	miss := func() {
+		h.writeResponse(ctx, writer, &cacheproto.Response{ID: req.ID, Miss: true})
+	}
+
 	remoteObj, err := h.remoteStorage.Get(ctx, &GetRequest{
 		ActionID: req.ActionID,
 	})
@@ -275,10 +308,7 @@ func (h *Handler) handleGet(ctx context.Context, writer cacheproto.ResponseWrite
 		// store object in local storage and return path
 		defer remoteObj.Body.Close()
 	case errors.Is(err, ErrNotFound):
-		h.writeResponse(ctx, writer, &cacheproto.Response{
-			ID:   req.ID,
-			Miss: true,
-		})
+		miss()
 		return
 	default:
 		h.writeResponse(ctx, writer, &cacheproto.Response{
@@ -293,22 +323,32 @@ func (h *Handler) handleGet(ctx context.Context, writer cacheproto.ResponseWrite
 		Algorithm: remoteObj.CompressionAlgorithm,
 	})
 	if err != nil {
-		h.writeResponse(ctx, writer, &cacheproto.Response{
-			ID:  req.ID,
-			Err: fmt.Sprintf("failed to decompress object: %v", err),
-		})
+		// A remote object we can't decompress is corrupt or tampered with.
+		// Report a miss so the compiler rebuilds instead of failing the build.
+		slog.WarnContext(ctx, "Failed to decompress remote object, treating as cache miss", logging.Error(err))
+		miss()
 		return
 	}
 
 	defer decompressedObj.Body.Close()
 
 	newLocalObj, err := h.localStorage.PutLocal(ctx, &LocalPutRequest{
-		ActionID: req.ActionID,
-		OutputID: remoteObj.OutputID,
-		Size:     remoteObj.UncompressedSize,
-		Body:     decompressedObj.Body,
+		ActionID:       req.ActionID,
+		OutputID:       remoteObj.OutputID,
+		Size:           remoteObj.UncompressedSize,
+		Body:           decompressedObj.Body,
+		VerifyOutputID: true,
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, nil):
+	case errors.Is(err, ErrIntegrity), errors.Is(err, ErrObjectTooLarge):
+		// The remote object is untrustworthy (tampered, corrupted, or a
+		// decompression bomb). Never serve it; report a miss so the compiler
+		// rebuilds. The bad object is not committed to local storage.
+		slog.WarnContext(ctx, "Remote object rejected, treating as cache miss", logging.Error(err))
+		miss()
+		return
+	default:
 		h.writeResponse(ctx, writer, &cacheproto.Response{
 			ID:  req.ID,
 			Err: fmt.Sprintf("failed to put object: %v", err),
@@ -317,6 +357,7 @@ func (h *Handler) handleGet(ctx context.Context, writer cacheproto.ResponseWrite
 	}
 
 	h.getHits.Add(1)
+	h.bytesDownloaded.Add(remoteObj.Size)
 	h.writeResponse(ctx, writer, &cacheproto.Response{
 		ID:       req.ID,
 		OutputID: remoteObj.OutputID,
@@ -411,7 +452,7 @@ func (h *Handler) putToRemote(actionID []byte) {
 
 	// error handling is not critical, we already stored object in local storage
 	// logging is done by observers
-	_, _ = h.remoteStorage.Put(ctx, &PutRequest{
+	_, err = h.remoteStorage.Put(ctx, &PutRequest{
 		ActionID:             localObjStream.ActionID,
 		OutputID:             localObjStream.OutputID,
 		Size:                 compressResult.Size,
@@ -421,6 +462,9 @@ func (h *Handler) putToRemote(actionID []byte) {
 		CompressionAlgorithm: compressResult.Algorithm,
 		UncompressedSize:     localObjStream.Size,
 	})
+	if err == nil {
+		h.bytesUploaded.Add(compressResult.Size)
+	}
 }
 
 func (h *Handler) handleClose(ctx context.Context, writer cacheproto.ResponseWriter, req *cacheproto.Request) {
@@ -562,9 +606,11 @@ func (h *Handler) Supports(cmd cacheproto.Cmd) bool {
 
 func (h *Handler) GetStatistics() Statistics {
 	return Statistics{
-		GetCalls: h.getCalls.Load(),
-		GetHits:  h.getHits.Load(),
-		PutCalls: h.putCalls.Load(),
+		GetCalls:        h.getCalls.Load(),
+		GetHits:         h.getHits.Load(),
+		PutCalls:        h.putCalls.Load(),
+		BytesDownloaded: h.bytesDownloaded.Load(),
+		BytesUploaded:   h.bytesUploaded.Load(),
 	}
 }
 

@@ -12,6 +12,11 @@ The guideline for versioning is as follows:
 - If the change is not related to new features i.e. bugfixes, dependency upgrades, etc., increase patch version (e.g. `v1.2.0` -> `v1.2.1`).
 
 ## [Unreleased]
+- **Security**: verify the integrity of objects downloaded from remote storage by checking that their content hashes to the claimed `OutputID` (SHA-256); objects that fail verification are treated as a cache miss instead of being served to the compiler
+- **Security**: bound writes to disk by the declared object size to prevent decompression bombs from untrusted remote storage exhausting disk; oversized objects are rejected and treated as a cache miss
+- **Security**: reject plaintext `http://` / `minio+http://` remote storage and credentials endpoints by default; add `--allow-insecure-http-remotes` / `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES` to opt back in for local testing. **Breaking for plaintext HTTP setups, including `proxy` mode** — set the override (see [README](./README.md#transport-security))
+- **Security**: `cacheprog proxy` now listens on loopback (`127.0.0.1:8080`) by default instead of all interfaces, and warns when bound to a non-loopback address. **Breaking if you relied on the previous `:8080` default** — set `CACHEPROG_PROXY_LISTEN_ADDRESS` explicitly
+- S3 `AccessDenied` errors are no longer silently treated as cache misses; they are surfaced (and logged) so misconfigured credentials are visible
 
 ## [1.2.0] - 2026-03-31
 - Added half-open state to circuit breaker: after `retryAfter` elapses, a single probe request is allowed through to test if the upstream has recovered

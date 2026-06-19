@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"log/slog"
 )
 
@@ -11,6 +12,21 @@ func Error(err error) slog.Attr {
 		return slog.Any("error", nil)
 	}
 	return slog.String("error", err.Error())
+}
+
+// HumanBytes formats a byte count as a human-readable string (e.g. "1.5 MiB")
+// for logging. The value is resolved lazily, so it costs nothing unless logged.
+func HumanBytes(n int64) slog.Value {
+	const unit = 1024
+	if n < unit {
+		return slog.StringValue(fmt.Sprintf("%d B", n))
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return slog.StringValue(fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp]))
 }
 
 type argsContextKey struct{}

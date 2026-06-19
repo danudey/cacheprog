@@ -86,6 +86,12 @@ This tool is equipped with circuit-breaker for remote storage to automatically d
 
 To disable it set this variable to zero or negative value.
 
+#### Transport security
+
+Remote storage endpoints (S3 endpoint, S3 credentials endpoint and HTTP storage base URL) must use TLS (`https://`, `minio+https://`). Plaintext `http://` / `minio+http://` endpoints are **rejected at startup** because an attacker on the network path could read or tamper with cache objects in transit, and tampered objects poison builds.
+
+If you genuinely need plaintext for local testing (e.g. talking to a local Minio or to a `cacheprog proxy` over loopback) set `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true` (flag: `--allow-insecure-http-remotes`). A warning is logged whenever an insecure endpoint is used. **Do not enable this in production.**
+
 ### S3-compatible storage configuration
 
 Environment variables for S3-compatible storage are:
@@ -116,7 +122,7 @@ See https://github.com/aws/aws-sdk-go-v2/issues/1816 and https://discuss.google.
 To simplify setup we provide an adapter that wraps Go interface implementation into HTTP server. See [./pkg/httpstorage/server.go](./pkg/httpstorage/server.go) for details.
 
 Environment variables for HTTP storage are:
-* `CACHEPROG_HTTP_STORAGE_BASE_URL` - Base URL, required.
+* `CACHEPROG_HTTP_STORAGE_BASE_URL` - Base URL, required. Must be `https://` unless `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true` is set (see [Transport security](#transport-security)). Note that `cacheprog proxy` is reached over plaintext `http://`, so the proxy-mode setup below requires this override.
 * `CACHEPROG_HTTP_STORAGE_EXTRA_HEADERS` - Extra headers to be added to each request. Comma-separated list of `key:value` pairs.
 
 ### Metrics pushing configuration
@@ -171,7 +177,7 @@ To make things possible here we provide a `cacheprog proxy` mode.
 In this mode cachprog runs as a sidecar for translating requests from `http` storage type into any storage type.
 It allows us to not deal with authentication inside docker build context.
 
-**NOTE**. This mode is not intended to be used as dedicated service because it does not contain any authentication mechanism for incoming requests. 
+**NOTE**. This mode is not intended to be used as dedicated service because it does not contain any authentication mechanism for incoming requests. Anyone able to reach the proxy can read and **poison** the cache using the proxy's credentials, which leads to arbitrary code in builds that consume the cache. For this reason the proxy listens on **loopback (`127.0.0.1:8080`) by default**; only bind it to a routable address (e.g. `0.0.0.0`, as in the example below for docker build access over the host network) on a trusted, isolated network. A warning is logged when it binds to a non-loopback address.
 
 Setup is a bit more complex in this case. Following things are required:
 * custom base image with Go compiler, cacheprog binary and other dependencies
@@ -184,6 +190,7 @@ ONBUILD ARG CACHEPROG_SERVER=cacheprog:8080
 ONBUILD ENV \
     CACHEPROG_REMOTE_STORAGE_TYPE=http \
     CACHEPROG_HTTP_STORAGE_BASE_URL=http://${CACHEPROG_SERVER}/ \
+    CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true \ # the in-build client talks plaintext http to the local proxy
     CACHEPROG_METRICS_PUSH_ENDPOINT=http://${CACHEPROG_SERVER}/metricsproxy \ # if you want to push metrics
     GOCACHEPROG="/bin/cacheprog"
 ```

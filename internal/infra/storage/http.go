@@ -25,9 +25,13 @@ func NewHTTP(client *http.Client, endpoint string, extraHeaders http.Header) *HT
 	}
 }
 
-func ConfigureHTTP(baseURL string, extraHeaders http.Header) (*HTTP, error) {
+func ConfigureHTTP(baseURL string, extraHeaders http.Header, allowInsecure bool) (*HTTP, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("base URL is required")
+	}
+
+	if err := checkRemoteURLScheme("HTTP storage base URL", baseURL, allowInsecure); err != nil {
+		return nil, err
 	}
 
 	slog.Info("Configuring HTTP storage with base URL", slog.String("baseURL", baseURL))

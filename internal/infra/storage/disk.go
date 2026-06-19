@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -216,9 +218,18 @@ func (d *Disk) PutLocal(_ context.Context, request *cacheprog.LocalPutRequest) (
 	dataFilePath := d.dataFilePath(request.ActionID, false)
 	var tempDataFilePath string
 
+	// When requested, hash the content as it's streamed to disk so we can
+	// verify it against the claimed OutputID before committing the object.
+	body := request.Body
+	var hasher hash.Hash
+	if request.VerifyOutputID {
+		hasher = sha256.New()
+		body = io.TeeReader(body, hasher)
+	}
+
 	err = retryOnExist(func() error {
 		tempDataFilePath = d.dataFilePath(request.ActionID, true)
-		return d.writeFile(tempDataFilePath, request.Size, request.Body)
+		return d.writeFile(tempDataFilePath, request.Size, body)
 	})
 	if err != nil {
 		err = fmt.Errorf("write data file: %w", err)
@@ -230,6 +241,24 @@ func (d *Disk) PutLocal(_ context.Context, request *cacheprog.LocalPutRequest) (
 	}
 
 	// here we have temporary meta file and temporary data file
+
+	// Verify integrity before committing so a tampered or corrupted object is
+	// never exposed to the compiler. The GOCACHEPROG OutputID is the SHA-256 of
+	// the output; we only verify when it has the expected length so non-SHA-256
+	// schemes (e.g. some legacy clients) are left untouched.
+	if hasher != nil && len(request.OutputID) == sha256.Size {
+		if sum := hasher.Sum(nil); !bytes.Equal(sum, request.OutputID) {
+			err = fmt.Errorf("%w: content sha256 %x does not match OutputID %x",
+				cacheprog.ErrIntegrity, sum, request.OutputID)
+			if unlinkErr := d.root.Remove(tempDataFilePath); unlinkErr != nil {
+				err = fmt.Errorf("%w; cleanup data: %w", err, unlinkErr)
+			}
+			if unlinkErr := d.root.Remove(tempMetaFilePath); unlinkErr != nil {
+				err = fmt.Errorf("%w; cleanup meta: %w", err, unlinkErr)
+			}
+			return nil, err
+		}
+	}
 
 	if err = d.root.Rename(tempDataFilePath, dataFilePath); err != nil {
 		err = fmt.Errorf("rename data file: %w", err)
@@ -299,11 +328,23 @@ func (d *Disk) writeFile(file string, size int64, data io.Reader) error {
 		return fmt.Errorf("open file: %w", err)
 	}
 
-	written, err := io.Copy(f, data)
+	// Bound the amount of data written to the declared size. This protects
+	// against decompression bombs and lying metadata from untrusted remote
+	// storage: without a bound, io.Copy would write the whole (potentially
+	// enormous) stream to disk and only notice the size mismatch afterwards.
+	// We allow one extra byte so an oversized stream can be detected.
+	if size < 0 {
+		return fmt.Errorf("write to file: negative size %d", size)
+	}
+
+	written, err := io.Copy(f, io.LimitReader(data, size+1))
 	if err != nil {
 		return fmt.Errorf("write to file: %w", err)
 	}
-	if size > 0 && written != size {
+	switch {
+	case written > size:
+		return fmt.Errorf("write to file: %w: declared %d bytes", cacheprog.ErrObjectTooLarge, size)
+	case written != size:
 		return fmt.Errorf("write to file: %w", io.ErrShortWrite)
 	}
 

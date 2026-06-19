@@ -208,6 +208,8 @@ func (e *Env) configureMinio(params *testscript.Params) {
 		env.Setenv("CACHEPROG_S3_ACCESS_KEY_ID", cmp.Or(os.Getenv("MINIO_ROOT_USER"), "minioadmin"))
 		env.Setenv("CACHEPROG_S3_ACCESS_KEY_SECRET", cmp.Or(os.Getenv("MINIO_ROOT_PASSWORD"), "minioadmin"))
 		env.Setenv("CACHEPROG_S3_SESSION_TOKEN", "")
+		// the local Minio endpoint is plaintext (minio+http), allowed only for testing
+		env.Setenv("CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES", "true")
 		env.Setenv("MINIO_ALIAS", "myminio") // defined in docker-compose.yml
 
 		return nil

@@ -11,6 +11,7 @@ import (
 	"github.com/platacard/cacheprog/internal/app/cacheprog"
 	"github.com/platacard/cacheprog/internal/infra/cacheproto"
 	"github.com/platacard/cacheprog/internal/infra/compression"
+	"github.com/platacard/cacheprog/internal/infra/logging"
 	"github.com/platacard/cacheprog/internal/infra/metrics"
 	"github.com/platacard/cacheprog/internal/infra/storage"
 )
@@ -35,6 +36,8 @@ type RemoteStorageArgs struct {
 	RemoteStorageType    string        `arg:"--remote-storage-type,env:REMOTE_STORAGE_TYPE" placeholder:"TYPE" default:"disabled" help:"Remote storage type. Available: s3, http, disabled"`
 	MaxConsecutiveErrors int64         `arg:"--max-consecutive-errors,env:REMOTE_STORAGE_MAX_CONSECUTIVE_ERRORS" default:"10" placeholder:"NUM" help:"Max number of consecutive errors to tolerate before disabling the remote storage, zero or negative value means unlimited"`
 	RetryAfter           time.Duration `arg:"--retry-after,env:REMOTE_STORAGE_RETRY_AFTER" default:"15s" placeholder:"DURATION" help:"How long to wait before probing remote storage after circuit breaker trips, zero disables recovery"`
+
+	AllowInsecureHTTPRemotes bool `arg:"--allow-insecure-http-remotes,env:ALLOW_INSECURE_HTTP_REMOTES" help:"Allow plaintext http:// (and minio+http://) remote storage and credentials endpoints. Insecure: traffic can be read or tampered with in transit, poisoning builds. Intended only for local testing."`
 }
 
 type S3Args struct {
@@ -66,6 +69,7 @@ type MetricsPushArgs struct {
 func (r *RemoteStorageArgs) configureRemoteStorage() (cacheprog.RemoteStorage, error) {
 	switch r.RemoteStorageType {
 	case "s3":
+		slog.Info("Using S3 remote storage")
 		return storage.ConfigureS3(storage.S3Config{
 			KeyPrefix:                 r.Prefix,
 			Expiration:                r.Expiration,
@@ -78,10 +82,13 @@ func (r *RemoteStorageArgs) configureRemoteStorage() (cacheprog.RemoteStorage, e
 			AccessKeyID:               r.AccessKeyID,
 			AccessKeySecret:           r.AccessKeySecret,
 			SessionToken:              r.SessionToken,
+			AllowInsecureHTTP:         r.AllowInsecureHTTPRemotes,
 		})
 	case "http":
-		return storage.ConfigureHTTP(urlOrEmpty(r.BaseURL), headerValuesToHTTP(r.ExtraHeaders))
+		slog.Info("Using HTTP remote storage")
+		return storage.ConfigureHTTP(urlOrEmpty(r.BaseURL), headerValuesToHTTP(r.ExtraHeaders), r.AllowInsecureHTTPRemotes)
 	case "disabled":
+		slog.Info("Disabled remote storage")
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("invalid remote storage type: %s", r.RemoteStorageType)
@@ -137,6 +144,8 @@ func (a *CacheprogAppArgs) Run(ctx context.Context) error {
 			"get_hits", statistics.GetHits,
 			"get_hit_ratio", fmt.Sprintf("%.2f", float64(statistics.GetHits)/float64(statistics.GetCalls)),
 			"put_calls", statistics.PutCalls,
+			"downloaded", logging.HumanBytes(statistics.BytesDownloaded),
+			"uploaded", logging.HumanBytes(statistics.BytesUploaded),
 		)
 	}()
 

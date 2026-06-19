@@ -76,8 +76,9 @@ type S3Config struct {
 
 	// client-level path resolver settings
 
-	Endpoint       string // optional, if provided, will be used to configure the client, supports schemes minio+http://, minio+https://, etc. for minio compatibility
-	ForcePathStyle bool   // forces path style endpoints, useful for some S3-compatible storages
+	Endpoint          string // optional, if provided, will be used to configure the client, supports schemes minio+http://, minio+https://, etc. for minio compatibility
+	ForcePathStyle    bool   // forces path style endpoints, useful for some S3-compatible storages
+	AllowInsecureHTTP bool   // allow plaintext http:// / minio+http:// endpoints, insecure, for testing only
 
 	// client-level credentials by endpoint settings, optional
 
@@ -93,6 +94,10 @@ type S3Config struct {
 func ConfigureS3(cfg S3Config) (*S3, error) {
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("bucket is required")
+	}
+
+	if err := validateS3Endpoints(cfg); err != nil {
+		return nil, err
 	}
 
 	prefix, err := templatePrefix(cfg.KeyPrefix)
@@ -192,6 +197,19 @@ func ConfigureS3(cfg S3Config) (*S3, error) {
 	}), nil
 }
 
+// validateS3Endpoints rejects plaintext endpoints unless insecure transport
+// was explicitly allowed. The credentials endpoint is checked too because
+// fetching credentials over plaintext would leak them.
+func validateS3Endpoints(cfg S3Config) error {
+	if err := checkRemoteURLScheme("S3 endpoint", cfg.Endpoint, cfg.AllowInsecureHTTP); err != nil {
+		return err
+	}
+	if err := checkRemoteURLScheme("S3 credentials endpoint", cfg.CredentialsEndpoint, cfg.AllowInsecureHTTP); err != nil {
+		return err
+	}
+	return nil
+}
+
 // GetBucketRegion attempts to detrmine bucket region by querying GetBucketLocation API.
 // This needed to reduce requests latency by preventing extra hops via default region if bucket region was not provided
 func GetBucketRegion(ctx context.Context, bucket string, awsOptions ...func(*awsConfig.LoadOptions) error) (string, error) {
@@ -229,6 +247,13 @@ func (s *S3) Get(ctx context.Context, request *cacheprog.GetRequest) (*cacheprog
 	case errors.Is(err, nil):
 	case isNotFound(err):
 		return nil, cacheprog.ErrNotFound
+	case isAccessDenied(err):
+		// Surface permission problems instead of silently degrading to a cache
+		// miss, which would otherwise mask misconfigured credentials and make
+		// every build look like a clean rebuild forever.
+		slog.WarnContext(ctx, "Access denied reading object from S3; check that the credentials grant s3:GetObject (and s3:ListBucket so that missing keys return NoSuchKey instead of AccessDenied)",
+			"key", s.key(request.ActionID))
+		return nil, fmt.Errorf("get object: access denied: %w", err)
 	default:
 		return nil, fmt.Errorf("get object: %w", err)
 	}
@@ -299,8 +324,20 @@ func (s *S3) key(actionID []byte) string {
 func isNotFound(err error) bool {
 	var se smithy.APIError
 	if errors.As(err, &se) {
-		code := se.ErrorCode()
-		if code == "AccessDenied" || code == "NoSuchKey" {
+		switch se.ErrorCode() {
+		case "NoSuchKey", "NotFound":
+			return true
+		}
+	}
+
+	return false
+}
+
+func isAccessDenied(err error) bool {
+	var se smithy.APIError
+	if errors.As(err, &se) {
+		switch se.ErrorCode() {
+		case "AccessDenied", "AccessDeniedException", "Forbidden":
 			return true
 		}
 	}
