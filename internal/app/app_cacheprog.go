@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/platacard/cacheprog/internal/infra/compression"
 	"github.com/platacard/cacheprog/internal/infra/logging"
 	"github.com/platacard/cacheprog/internal/infra/metrics"
+	"github.com/platacard/cacheprog/internal/infra/signing"
 	"github.com/platacard/cacheprog/internal/infra/storage"
 )
 
@@ -32,12 +34,22 @@ type CacheprogAppArgs struct {
 type RemoteStorageArgs struct {
 	S3Args
 	HTTPStorageArgs
+	SigningArgs
 
 	RemoteStorageType    string        `arg:"--remote-storage-type,env:REMOTE_STORAGE_TYPE" placeholder:"TYPE" default:"disabled" help:"Remote storage type. Available: s3, http, disabled"`
 	MaxConsecutiveErrors int64         `arg:"--max-consecutive-errors,env:REMOTE_STORAGE_MAX_CONSECUTIVE_ERRORS" default:"10" placeholder:"NUM" help:"Max number of consecutive errors to tolerate before disabling the remote storage, zero or negative value means unlimited"`
 	RetryAfter           time.Duration `arg:"--retry-after,env:REMOTE_STORAGE_RETRY_AFTER" default:"15s" placeholder:"DURATION" help:"How long to wait before probing remote storage after circuit breaker trips, zero disables recovery"`
 
 	AllowInsecureHTTPRemotes bool `arg:"--allow-insecure-http-remotes,env:ALLOW_INSECURE_HTTP_REMOTES" help:"Allow plaintext http:// (and minio+http://) remote storage and credentials endpoints. Insecure: traffic can be read or tampered with in transit, poisoning builds. Intended only for local testing."`
+}
+
+type SigningArgs struct {
+	SigningAlgorithm  string `arg:"--signing-algorithm,env:SIGNING_ALGORITHM" placeholder:"ALG" help:"Sign uploaded objects and verify fetched ones. Available: hmac-sha256. Empty disables signing."`
+	SigningKey        string `arg:"--signing-key,env:SIGNING_KEY" placeholder:"KEY" help:"Signing key material. Prefer --signing-key-file to keep secrets out of the process environment."`
+	SigningKeyFile    string `arg:"--signing-key-file,env:SIGNING_KEY_FILE" placeholder:"PATH" help:"Path to a file containing the signing key. A single trailing newline is stripped."`
+	SigningKeyID      string `arg:"--signing-key-id,env:SIGNING_KEY_ID" placeholder:"ID" help:"Non-secret identifier of the signing key, used for rotation. Defaults to a digest of the key."`
+	SignatureLocation string `arg:"--signature-location,env:SIGNATURE_LOCATION" placeholder:"LOC" default:"inline" help:"Where the signature is stored. Available: inline."`
+	RequireSignature  bool   `arg:"--require-signature,env:REQUIRE_SIGNATURE" help:"Reject unsigned objects on fetch instead of passing them through. Enable once the cache has refilled with signed objects."`
 }
 
 type S3Args struct {
@@ -67,6 +79,14 @@ type MetricsPushArgs struct {
 }
 
 func (r *RemoteStorageArgs) configureRemoteStorage() (cacheprog.RemoteStorage, error) {
+	base, err := r.configureBaseStorage()
+	if err != nil || base == nil {
+		return base, err
+	}
+	return r.wrapWithSigning(base)
+}
+
+func (r *RemoteStorageArgs) configureBaseStorage() (cacheprog.RemoteStorage, error) {
 	switch r.RemoteStorageType {
 	case "s3":
 		slog.Info("Using S3 remote storage")
@@ -93,6 +113,51 @@ func (r *RemoteStorageArgs) configureRemoteStorage() (cacheprog.RemoteStorage, e
 	default:
 		return nil, fmt.Errorf("invalid remote storage type: %s", r.RemoteStorageType)
 	}
+}
+
+func (r *RemoteStorageArgs) wrapWithSigning(base cacheprog.RemoteStorage) (cacheprog.RemoteStorage, error) {
+	key, err := r.loadSigningKey()
+	if err != nil {
+		return nil, err
+	}
+
+	signer, carrier, enabled, err := signing.Configure(signing.Config{
+		Algorithm: r.SigningAlgorithm,
+		Key:       key,
+		KeyID:     r.SigningKeyID,
+		Location:  r.SignatureLocation,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure signing: %w", err)
+	}
+	if !enabled {
+		return base, nil
+	}
+
+	slog.Info("Object signing enabled",
+		"algorithm", r.SigningAlgorithm,
+		"location", carrier.Name(),
+		"key_id", signer.KeyID(),
+		"require", r.RequireSignature,
+	)
+	return signing.NewRemoteStorage(base, signer, carrier, r.RequireSignature), nil
+}
+
+func (r *RemoteStorageArgs) loadSigningKey() ([]byte, error) {
+	if r.SigningKeyFile != "" {
+		data, err := os.ReadFile(r.SigningKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read signing key file: %w", err)
+		}
+		// strip a single trailing newline that editors/shells commonly add
+		data = bytes.TrimRight(data, "\n")
+		data = bytes.TrimRight(data, "\r")
+		return data, nil
+	}
+	if r.SigningKey != "" {
+		return []byte(r.SigningKey), nil
+	}
+	return nil, nil
 }
 
 func (a *CacheprogAppArgs) Run(ctx context.Context) error {
