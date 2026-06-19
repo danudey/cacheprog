@@ -15,15 +15,22 @@ import (
 	"github.com/platacard/cacheprog/internal/app/cacheprog"
 )
 
-// fakeStorage is an in-memory RemoteStorage that stores whatever bytes are
-// uploaded, so we can exercise the decorator end to end and tamper with the
-// stored object.
+// storedObject mirrors how a backend persists an object: the body bytes plus
+// (for the metadata carrier) the out-of-band manifest and signature.
+type storedObject struct {
+	body      []byte
+	manifest  []byte
+	signature []byte
+}
+
+// fakeStorage is an in-memory RemoteStorage that stores whatever is uploaded,
+// so we can exercise the decorator end to end and tamper with the stored object.
 type fakeStorage struct {
-	objects map[string][]byte
+	objects map[string]storedObject
 }
 
 func newFakeStorage() *fakeStorage {
-	return &fakeStorage{objects: map[string][]byte{}}
+	return &fakeStorage{objects: map[string]storedObject{}}
 }
 
 func (f *fakeStorage) Put(_ context.Context, req *cacheprog.PutRequest) (*cacheprog.PutResponse, error) {
@@ -31,18 +38,24 @@ func (f *fakeStorage) Put(_ context.Context, req *cacheprog.PutRequest) (*cachep
 	if err != nil {
 		return nil, err
 	}
-	f.objects[hex.EncodeToString(req.ActionID)] = b
+	f.objects[hex.EncodeToString(req.ActionID)] = storedObject{
+		body:      b,
+		manifest:  req.Manifest,
+		signature: req.Signature,
+	}
 	return &cacheprog.PutResponse{}, nil
 }
 
 func (f *fakeStorage) Get(_ context.Context, req *cacheprog.GetRequest) (*cacheprog.GetResponse, error) {
-	b, ok := f.objects[hex.EncodeToString(req.ActionID)]
+	o, ok := f.objects[hex.EncodeToString(req.ActionID)]
 	if !ok {
 		return nil, cacheprog.ErrNotFound
 	}
 	return &cacheprog.GetResponse{
-		Body: io.NopCloser(bytes.NewReader(b)),
-		Size: int64(len(b)),
+		Body:      io.NopCloser(bytes.NewReader(o.body)),
+		Size:      int64(len(o.body)),
+		Manifest:  o.manifest,
+		Signature: o.signature,
 	}, nil
 }
 
@@ -98,7 +111,7 @@ func TestRemoteStorage_TamperedPayload_IsMiss(t *testing.T) {
 
 	// flip the last byte (part of the payload, after the signed header)
 	stored := fake.objects[hex.EncodeToString(actionID)]
-	stored[len(stored)-1] ^= 0xff
+	stored.body[len(stored.body)-1] ^= 0xff
 
 	_, err := s.Get(context.Background(), &cacheprog.GetRequest{ActionID: actionID})
 	assert.ErrorIs(t, err, cacheprog.ErrNotFound)
@@ -111,7 +124,7 @@ func TestRemoteStorage_TamperedManifest_IsMiss(t *testing.T) {
 
 	// flip a byte inside the header region (manifest/sig), past the magic+lens
 	stored := fake.objects[hex.EncodeToString(actionID)]
-	stored[inlineHeaderSize+1] ^= 0xff
+	stored.body[inlineHeaderSize+1] ^= 0xff
 
 	_, err := s.Get(context.Background(), &cacheprog.GetRequest{ActionID: actionID})
 	assert.ErrorIs(t, err, cacheprog.ErrNotFound)
@@ -138,14 +151,14 @@ func TestRemoteStorage_Unsigned(t *testing.T) {
 
 	t.Run("required rejects", func(t *testing.T) {
 		s, fake := newTestStore(t, true)
-		fake.objects[hex.EncodeToString(actionID)] = raw
+		fake.objects[hex.EncodeToString(actionID)] = storedObject{body: raw}
 		_, err := s.Get(context.Background(), &cacheprog.GetRequest{ActionID: actionID})
 		assert.ErrorIs(t, err, cacheprog.ErrNotFound)
 	})
 
 	t.Run("not required passes through", func(t *testing.T) {
 		s, fake := newTestStore(t, false)
-		fake.objects[hex.EncodeToString(actionID)] = raw
+		fake.objects[hex.EncodeToString(actionID)] = storedObject{body: raw}
 		resp, err := s.Get(context.Background(), &cacheprog.GetRequest{ActionID: actionID})
 		require.NoError(t, err)
 		got, err := io.ReadAll(resp.Body)

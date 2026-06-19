@@ -33,14 +33,26 @@ func TestConfigure(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("ed25519 not implemented", func(t *testing.T) {
-		_, _, _, err := Configure(Config{Algorithm: "ed25519", Key: []byte("k")})
-		require.ErrorContains(t, err, "not implemented")
+	t.Run("ed25519 with verify keys", func(t *testing.T) {
+		_, pubPEM := genEd25519PEM(t)
+		signer, carrier, enabled, err := Configure(Config{Algorithm: AlgEd25519Name, VerifyKeys: pubPEM})
+		require.NoError(t, err)
+		assert.True(t, enabled)
+		assert.Equal(t, AlgEd25519, signer.AlgID())
+		assert.False(t, signer.CanSign())
+		assert.Equal(t, LocationInline, carrier.Name())
 	})
 
-	t.Run("metadata location not implemented", func(t *testing.T) {
-		_, _, _, err := Configure(Config{Algorithm: AlgHMACName, Key: []byte("k"), Location: "metadata"})
-		require.ErrorContains(t, err, "not implemented")
+	t.Run("ed25519 needs some key", func(t *testing.T) {
+		_, _, _, err := Configure(Config{Algorithm: AlgEd25519Name})
+		require.Error(t, err)
+	})
+
+	t.Run("metadata location", func(t *testing.T) {
+		_, carrier, enabled, err := Configure(Config{Algorithm: AlgHMACName, Key: []byte("k"), Location: LocationMetadata})
+		require.NoError(t, err)
+		assert.True(t, enabled)
+		assert.Equal(t, LocationMetadata, carrier.Name())
 	})
 
 	t.Run("unknown algorithm", func(t *testing.T) {
