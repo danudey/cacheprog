@@ -44,11 +44,13 @@ type RemoteStorageArgs struct {
 }
 
 type SigningArgs struct {
-	SigningAlgorithm  string `arg:"--signing-algorithm,env:SIGNING_ALGORITHM" placeholder:"ALG" help:"Sign uploaded objects and verify fetched ones. Available: hmac-sha256. Empty disables signing."`
-	SigningKey        string `arg:"--signing-key,env:SIGNING_KEY" placeholder:"KEY" help:"Signing key material. Prefer --signing-key-file to keep secrets out of the process environment."`
-	SigningKeyFile    string `arg:"--signing-key-file,env:SIGNING_KEY_FILE" placeholder:"PATH" help:"Path to a file containing the signing key. A single trailing newline is stripped."`
-	SigningKeyID      string `arg:"--signing-key-id,env:SIGNING_KEY_ID" placeholder:"ID" help:"Non-secret identifier of the signing key, used for rotation. Defaults to a digest of the key."`
-	SignatureLocation string `arg:"--signature-location,env:SIGNATURE_LOCATION" placeholder:"LOC" default:"inline" help:"Where the signature is stored. Available: inline."`
+	SigningAlgorithm  string `arg:"--signing-algorithm,env:SIGNING_ALGORITHM" placeholder:"ALG" help:"Sign uploaded objects and verify fetched ones. Available: hmac-sha256, ed25519. Empty disables signing."`
+	SigningKey        string `arg:"--signing-key,env:SIGNING_KEY" placeholder:"KEY" help:"Signing key material (HMAC secret, or PEM ed25519 private key). Prefer --signing-key-file to keep secrets out of the process environment."`
+	SigningKeyFile    string `arg:"--signing-key-file,env:SIGNING_KEY_FILE" placeholder:"PATH" help:"Path to a file containing the signing key. For HMAC a single trailing newline is stripped."`
+	SigningKeyID      string `arg:"--signing-key-id,env:SIGNING_KEY_ID" placeholder:"ID" help:"Non-secret identifier of the signing key, used for rotation (HMAC only; ed25519 derives ids from the public key). Defaults to a digest of the key."`
+	VerifyKeys        string `arg:"--verify-keys,env:VERIFY_KEYS" placeholder:"PEM" help:"ed25519 only: PEM-encoded public keys to trust on verification. Used by verify-only readers and for key rotation."`
+	VerifyKeysFile    string `arg:"--verify-keys-file,env:VERIFY_KEYS_FILE" placeholder:"PATH" help:"Path to a file containing PEM-encoded ed25519 public keys to trust on verification."`
+	SignatureLocation string `arg:"--signature-location,env:SIGNATURE_LOCATION" placeholder:"LOC" default:"inline" help:"Where the signature is stored. Available: inline, metadata."`
 	RequireSignature  bool   `arg:"--require-signature,env:REQUIRE_SIGNATURE" help:"Reject unsigned objects on fetch instead of passing them through. Enable once the cache has refilled with signed objects."`
 }
 
@@ -120,12 +122,17 @@ func (r *RemoteStorageArgs) wrapWithSigning(base cacheprog.RemoteStorage) (cache
 	if err != nil {
 		return nil, err
 	}
+	verifyKeys, err := r.loadVerifyKeys()
+	if err != nil {
+		return nil, err
+	}
 
 	signer, carrier, enabled, err := signing.Configure(signing.Config{
-		Algorithm: r.SigningAlgorithm,
-		Key:       key,
-		KeyID:     r.SigningKeyID,
-		Location:  r.SignatureLocation,
+		Algorithm:  r.SigningAlgorithm,
+		Key:        key,
+		KeyID:      r.SigningKeyID,
+		VerifyKeys: verifyKeys,
+		Location:   r.SignatureLocation,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure signing: %w", err)
@@ -156,6 +163,20 @@ func (r *RemoteStorageArgs) loadSigningKey() ([]byte, error) {
 	}
 	if r.SigningKey != "" {
 		return []byte(r.SigningKey), nil
+	}
+	return nil, nil
+}
+
+func (r *RemoteStorageArgs) loadVerifyKeys() ([]byte, error) {
+	if r.VerifyKeysFile != "" {
+		data, err := os.ReadFile(r.VerifyKeysFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read verify keys file: %w", err)
+		}
+		return data, nil
+	}
+	if r.VerifyKeys != "" {
+		return []byte(r.VerifyKeys), nil
 	}
 	return nil, nil
 }

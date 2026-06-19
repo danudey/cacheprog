@@ -30,6 +30,11 @@ type (
 		Body                 io.ReadCloser
 		CompressionAlgorithm string
 		UncompressedSize     int64
+
+		// Manifest and Signature carry the signing metadata when the signature
+		// is stored out-of-band (the "metadata" carrier). Empty otherwise.
+		Manifest  []byte
+		Signature []byte
 	}
 
 	PutRequest struct {
@@ -41,6 +46,11 @@ type (
 		Sha256Sum            []byte
 		CompressionAlgorithm string
 		UncompressedSize     int64
+
+		// Manifest and Signature carry the signing metadata when the signature
+		// is stored out-of-band (the "metadata" carrier). Empty otherwise.
+		Manifest  []byte
+		Signature []byte
 	}
 
 	PutResponse struct{}

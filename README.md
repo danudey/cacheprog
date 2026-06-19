@@ -98,18 +98,26 @@ Transport security protects objects in flight, but anyone who can **write** to t
 
 Only the manifest is signed — never the (larger) payload — so the per-object cost is negligible regardless of algorithm; choose by trust model:
 
-* **`hmac-sha256`** (currently supported): symmetric. Fast and simple. Defends against in-transit tampering and anyone who does not hold the secret. Note that every party able to *verify* also holds the secret and could therefore *forge*, so this is best when all cache participants are equally trusted.
-* **`ed25519`** (asymmetric, planned follow-up): private key signs, public key verifies — use when untrusted readers (e.g. fork/PR jobs) must verify but not forge.
+* **`hmac-sha256`**: symmetric. Fast and simple. Defends against in-transit tampering and anyone who does not hold the secret. Note that every party able to *verify* also holds the secret and could therefore *forge*, so this is best when all cache participants are equally trusted.
+* **`ed25519`**: asymmetric. The private key signs and public keys verify, so untrusted readers (e.g. fork/PR jobs) can verify the cache but cannot forge entries. Give the private key only to trusted writers (e.g. post-merge pipelines) and the public key to everyone. A node with only public keys is verify-only and never uploads.
 
 Environment variables:
-* `CACHEPROG_SIGNING_ALGORITHM` - Signing algorithm. Available: `hmac-sha256`. Empty (default) disables signing.
-* `CACHEPROG_SIGNING_KEY` - Signing key material. Prefer the file form below to keep secrets out of the process environment.
-* `CACHEPROG_SIGNING_KEY_FILE` - Path to a file containing the signing key. A single trailing newline is stripped.
-* `CACHEPROG_SIGNING_KEY_ID` - Non-secret identifier of the signing key, used for rotation. Defaults to a digest of the key.
-* `CACHEPROG_SIGNATURE_LOCATION` - Where the signature travels. Available: `inline` (default), which wraps the stored object in a small self-describing container (storage-agnostic and proxy-friendly). A `metadata` location (signature in S3 metadata / HTTP headers) is a planned follow-up.
+* `CACHEPROG_SIGNING_ALGORITHM` - Signing algorithm. Available: `hmac-sha256`, `ed25519`. Empty (default) disables signing.
+* `CACHEPROG_SIGNING_KEY` - Signing key material: the HMAC secret, or a PEM PKCS#8 ed25519 private key (e.g. from `openssl genpkey -algorithm ed25519`). Prefer the file form below to keep secrets out of the process environment.
+* `CACHEPROG_SIGNING_KEY_FILE` - Path to a file containing the signing key. For HMAC a single trailing newline is stripped.
+* `CACHEPROG_SIGNING_KEY_ID` - Non-secret identifier of the signing key, used for rotation. HMAC only; defaults to a digest of the key. ed25519 derives key ids from the public key automatically.
+* `CACHEPROG_VERIFY_KEYS` / `CACHEPROG_VERIFY_KEYS_FILE` - ed25519 only: one or more PEM public keys to trust on verification. Required for verify-only readers, and lets you trust several keys at once for rotation.
+* `CACHEPROG_SIGNATURE_LOCATION` - Where the signature travels. `inline` (default) wraps the stored object in a small self-describing container — storage-agnostic and proxy-friendly. `metadata` stores the signature out-of-band in S3 object metadata / HTTP headers, leaving the body as the raw payload (consumable by other tools; subject to the backend's metadata size limits).
 * `CACHEPROG_REQUIRE_SIGNATURE` - If `true`, unsigned objects are rejected on fetch instead of passed through. Roll out by signing with this `false` first so the cache refills with signed objects, then flip it to `true`.
 
 The signature is verified before decompression, and the authenticated `UncompressedSize` bounds decompression, so signing also hardens the decompression-bomb protection.
+
+For asymmetric setups, generate a keypair with:
+```bash
+openssl genpkey -algorithm ed25519 -out cacheprog-signing.pem
+openssl pkey -in cacheprog-signing.pem -pubout -out cacheprog-signing.pub
+```
+Give `cacheprog-signing.pem` (via `CACHEPROG_SIGNING_KEY_FILE`) to trusted writers and `cacheprog-signing.pub` (via `CACHEPROG_VERIFY_KEYS_FILE`) to everyone else.
 
 ### S3-compatible storage configuration
 
