@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/rogpeppe/go-internal/gotooltest"
 	"github.com/rogpeppe/go-internal/testenv"
 	"github.com/rogpeppe/go-internal/testscript"
@@ -115,7 +115,7 @@ func (e *Env) getServiceExposedAddress(ctx context.Context, serviceName string, 
 		return "", fmt.Errorf("failed to create port: %w", err)
 	}
 
-	endpoint, err := container.PortEndpoint(ctx, portObj, "")
+	endpoint, err := container.PortEndpoint(ctx, string(portObj), "")
 	if err != nil {
 		return "", fmt.Errorf("failed to get endpoint: %w", err)
 	}
