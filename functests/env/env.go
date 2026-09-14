@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/rogpeppe/go-internal/gotooltest"
 	"github.com/rogpeppe/go-internal/testenv"
 	"github.com/rogpeppe/go-internal/testscript"
