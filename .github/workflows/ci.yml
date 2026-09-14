@@ -179,6 +179,5 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: "0"
         run: go build -v ${{ env.PACKAGES }}
