@@ -31,7 +31,7 @@ func TestNewDisk(t *testing.T) {
 		diskMock := NewMockDiskRoot(ctrl)
 
 		testFileMock := NewMockDiskFile(ctrl)
-		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0666)).Return(testFileMock, nil)
+		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0o666)).Return(testFileMock, nil)
 		testFileMock.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
 			return len(p), nil
 		}).AnyTimes()
@@ -52,8 +52,8 @@ func TestNewDisk(t *testing.T) {
 		diskMock := NewMockDiskRoot(ctrl)
 
 		testFileMock := NewMockDiskFile(ctrl)
-		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0666)).Return(nil, os.ErrExist)
-		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0666)).Return(testFileMock, nil)
+		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0o666)).Return(nil, os.ErrExist)
+		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0o666)).Return(testFileMock, nil)
 		testFileMock.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
 			return len(p), nil
 		}).AnyTimes()
@@ -68,7 +68,7 @@ func TestNewDisk(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		diskMock := NewMockDiskRoot(ctrl)
 
-		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0666)).Return(nil, fmt.Errorf("open file error"))
+		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0o666)).Return(nil, fmt.Errorf("open file error"))
 		diskMock.EXPECT().Remove(testFileMatch).Return(nil)
 
 		_, err := NewDisk(diskMock)
@@ -80,7 +80,7 @@ func TestNewDisk(t *testing.T) {
 		diskMock := NewMockDiskRoot(ctrl)
 
 		testFileMock := NewMockDiskFile(ctrl)
-		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0666)).Return(testFileMock, nil)
+		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0o666)).Return(testFileMock, nil)
 		testFileMock.EXPECT().Write(gomock.Any()).Return(0, fmt.Errorf("write error"))
 		diskMock.EXPECT().Remove(testFileMatch).Return(nil)
 
@@ -93,7 +93,7 @@ func TestNewDisk(t *testing.T) {
 		diskMock := NewMockDiskRoot(ctrl)
 
 		testFileMock := NewMockDiskFile(ctrl)
-		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0666)).Return(testFileMock, nil)
+		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0o666)).Return(testFileMock, nil)
 		testFileMock.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
 			return len(p), nil
 		}).AnyTimes()
@@ -109,7 +109,7 @@ func TestNewDisk(t *testing.T) {
 		diskMock := NewMockDiskRoot(ctrl)
 
 		testFileMock := NewMockDiskFile(ctrl)
-		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0666)).Return(testFileMock, nil)
+		diskMock.EXPECT().OpenFile(testFileMatch, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(0o666)).Return(testFileMock, nil)
 		testFileMock.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
 			return len(p), nil
 		}).AnyTimes()

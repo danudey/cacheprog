@@ -43,8 +43,7 @@ type (
 		UncompressedSize     int64
 	}
 
-	PutResponse struct {
-	}
+	PutResponse struct{}
 
 	LocalGetRequest struct {
 		ActionID []byte
@@ -170,6 +169,8 @@ type Handler struct {
 	closeTimeout time.Duration
 	closeChan    chan struct{} // closed on "close" command
 	closeWG      sync.WaitGroup
+	bgCtx        context.Context    // parent of every background job's context
+	bgCancel     context.CancelFunc // cancels bgCtx once close has stopped waiting
 	onClose      func(ctx context.Context) error
 
 	disableGet bool
@@ -208,6 +209,8 @@ func NewHandler(opts HandlerOptions) *Handler {
 		remotePutSema = make(chan struct{}, opts.MaxConcurrentRemotePuts)
 	}
 
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+
 	return &Handler{
 		remoteStorage:    opts.RemoteStorage,
 		remoteGetSema:    remoteGetSema,
@@ -218,6 +221,8 @@ func NewHandler(opts HandlerOptions) *Handler {
 		closeTimeout:     opts.CloseTimeout,
 		onClose:          opts.OnClose,
 		closeChan:        make(chan struct{}),
+		bgCtx:            bgCtx,
+		bgCancel:         bgCancel,
 		disableGet:       opts.DisableGet,
 		disablePut:       opts.DisablePut,
 	}
@@ -404,7 +409,7 @@ func (h *Handler) handlePut(ctx context.Context, writer cacheproto.ResponseWrite
 }
 
 func (h *Handler) putToRemote(actionID []byte) {
-	ctx := logging.AttachArgs(context.Background(), "action_id", logging.Bytes(actionID))
+	ctx := logging.AttachArgs(h.bgCtx, "action_id", logging.Bytes(actionID))
 
 	ctx, exit := h.enterPutToRemote(ctx)
 	defer exit()
@@ -475,6 +480,12 @@ func (h *Handler) handleClose(ctx context.Context, writer cacheproto.ResponseWri
 		h.closeWG.Go(func() { h.handleOnClose(ctx) })
 	}
 	h.closeWait()
+
+	// Background jobs that entered before the close command carry a context
+	// that closeWait cannot reach: enterPutToRemote only applies the close
+	// timeout to jobs that arrive after closeChan is closed. Cancelling here
+	// stops whatever closeWait gave up on, instead of leaking it.
+	h.bgCancel()
 
 	slog.DebugContext(ctx, "Close handler finished")
 	h.writeResponse(ctx, writer, &cacheproto.Response{

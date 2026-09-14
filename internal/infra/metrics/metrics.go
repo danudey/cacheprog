@@ -13,9 +13,7 @@ import (
 
 const metricPrefix = "cacheprog_"
 
-var (
-	enableVMHistograms atomic.Bool
-)
+var enableVMHistograms atomic.Bool
 
 type PushConfig struct {
 	Endpoint     string            // metrics endpoint, metrics will be pushed if provided

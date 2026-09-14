@@ -26,10 +26,8 @@ type (
 	}
 )
 
-var (
-	// ErrNotFound is returned when object is not found in remote storage.
-	ErrNotFound = cacheprog.ErrNotFound
-)
+// ErrNotFound is returned when object is not found in remote storage.
+var ErrNotFound = cacheprog.ErrNotFound
 
 // NewServer creates a http handler meant to be used as a 'http' remote storage for cacheprog.
 // It has 2 endpoints:
