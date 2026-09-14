@@ -119,6 +119,10 @@ openssl pkey -in cacheprog-signing.pem -pubout -out cacheprog-signing.pub
 ```
 Give `cacheprog-signing.pem` (via `CACHEPROG_SIGNING_KEY_FILE`) to trusted writers and `cacheprog-signing.pub` (via `CACHEPROG_VERIFY_KEYS_FILE`) to everyone else.
 
+This makes it easy to use one configuration across all CI environments: set the verification keys everywhere and add a signing key only where the cache should be written.
+* If a signing key is **provided but blank** (e.g. an empty CI secret), cacheprog logs a warning, ignores it, and continues with verification only.
+* If verification keys are configured but **no signing key** is available, cacheprog logs a warning and switches to **read-only mode** — remote puts are disabled, exactly as if `CACHEPROG_DISABLE_PUT=true` were set — so the node never publishes unsigned objects.
+
 ### S3-compatible storage configuration
 
 Environment variables for S3-compatible storage are:

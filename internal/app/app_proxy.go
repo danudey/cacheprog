@@ -48,7 +48,9 @@ func isNonLoopbackListenAddress(addr string) bool {
 }
 
 func (a *ProxyAppArgs) Run(ctx context.Context) error {
-	remoteStorage, err := a.configureRemoteStorage()
+	// The proxy has no put-disabling switch of its own; in verify-only mode the
+	// signing layer already refuses to publish objects it cannot sign.
+	remoteStorage, _, err := a.configureRemoteStorage()
 	if err != nil {
 		return fmt.Errorf("failed to configure remote storage: %w", err)
 	}
