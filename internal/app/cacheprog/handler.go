@@ -43,8 +43,7 @@ type (
 		UncompressedSize     int64
 	}
 
-	PutResponse struct {
-	}
+	PutResponse struct{}
 
 	LocalGetRequest struct {
 		ActionID []byte

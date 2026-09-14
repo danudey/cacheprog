@@ -60,7 +60,7 @@ func configureCPUProfiling(path string) (stop func() error, err error) {
 		return func() error { return nil }, nil
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open CPU profile file: %w", err)
 	}
@@ -80,7 +80,7 @@ func configureMemProfiling(path string) (stop func() error, err error) {
 		return func() error { return nil }, nil
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open memory profile file: %w", err)
 	}
@@ -124,7 +124,7 @@ func configureTraceProfiling(path string) (stop func() error, err error) {
 		return func() error { return nil }, nil
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open trace profile file: %w", err)
 	}
@@ -144,7 +144,7 @@ func configureFgprofProfiling(path string) (stop func() error, err error) {
 		return func() error { return nil }, nil
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_SYNC, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open fgprof profile file: %w", err)
 	}

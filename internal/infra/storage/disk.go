@@ -92,7 +92,7 @@ func ConfigureDisk(rootDir string) (*Disk, error) {
 
 	slog.Info("Configuring disk storage", "root", rootDir)
 
-	if err := os.MkdirAll(rootDir, 0755); err != nil {
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create root directory: %w", err)
 	}
 
@@ -181,7 +181,7 @@ func (d *Disk) GetLocalObject(_ context.Context, request *cacheprog.LocalObjectG
 }
 
 func (d *Disk) PutLocal(_ context.Context, request *cacheprog.LocalPutRequest) (*cacheprog.LocalPutResponse, error) {
-	err := d.root.Mkdir(d.objectDirName(request.ActionID), 0766)
+	err := d.root.Mkdir(d.objectDirName(request.ActionID), 0o766)
 	if err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, fmt.Errorf("create object dir: %w", err)
 	}
@@ -323,7 +323,7 @@ func (d *Disk) tempOf(name string) string {
 }
 
 func (d *Disk) writeFile(file string, size int64, data io.Reader) error {
-	f, err := d.root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
+	f, err := d.root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}
@@ -376,7 +376,7 @@ func (d *Disk) readMeta(file string) (*metaEntry, error) {
 }
 
 func (d *Disk) writeMeta(file string, meta *metaEntry) error {
-	metaFile, err := d.root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
+	metaFile, err := d.root.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}

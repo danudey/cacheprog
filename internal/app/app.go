@@ -63,7 +63,7 @@ func (l *LoggingArgs) createLogger() (*slog.Logger, func() error, error) {
 		}), func() error { return nil }, nil
 	}
 
-	outFile, err := os.OpenFile(l.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	outFile, err := os.OpenFile(l.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log output file: %w", err)
 	}
