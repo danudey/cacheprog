@@ -13,7 +13,7 @@ require (
 	github.com/aws/smithy-go v1.27.2
 	github.com/charmbracelet/log v1.0.0
 	github.com/felixge/fgprof v0.9.5
-	github.com/klauspost/compress v1.18.6
+	github.com/klauspost/compress v1.20.0
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/bytebufferpool v1.0.0
 	github.com/valyala/fasttemplate v1.2.2
