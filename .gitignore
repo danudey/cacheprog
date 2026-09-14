@@ -4,3 +4,4 @@
 *.out
 *-tests.json
 dist/
+/cacheprog
