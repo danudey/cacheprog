@@ -37,6 +37,8 @@ const (
 	outputMetadataKey               = "output_id"
 	compressionAlgorithmMetadataKey = "compression_algorithm"
 	uncompressedSizeMetadataKey     = "uncompressed_size"
+	manifestMetadataKey             = "signing_manifest"
+	signatureMetadataKey            = "signature"
 )
 
 type S3Params struct {
@@ -268,6 +270,11 @@ func (s *S3) Get(ctx context.Context, request *cacheprog.GetRequest) (*cacheprog
 		return nil, fmt.Errorf("get uncompressed size: %w", err)
 	}
 
+	manifest, signature, err := s.getSigning(object)
+	if err != nil {
+		return nil, fmt.Errorf("get signing metadata: %w", err)
+	}
+
 	return &cacheprog.GetResponse{
 		OutputID:             outputID,
 		ModTime:              *object.LastModified,
@@ -275,6 +282,8 @@ func (s *S3) Get(ctx context.Context, request *cacheprog.GetRequest) (*cacheprog
 		Body:                 object.Body,
 		CompressionAlgorithm: object.Metadata[compressionAlgorithmMetadataKey],
 		UncompressedSize:     cmp.Or(uncompressedSize, *object.ContentLength),
+		Manifest:             manifest,
+		Signature:            signature,
 	}, nil
 }
 
@@ -362,6 +371,22 @@ func (*S3) getUncompressedSize(object *s3.GetObjectOutput) (int64, error) {
 	return strconv.ParseInt(size, 10, 64)
 }
 
+func (*S3) getSigning(object *s3.GetObjectOutput) (manifest, signature []byte, err error) {
+	rawManifest, ok := object.Metadata[manifestMetadataKey]
+	if !ok {
+		return nil, nil, nil
+	}
+	manifest, err = base64.StdEncoding.DecodeString(rawManifest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode manifest: %w", err)
+	}
+	signature, err = base64.StdEncoding.DecodeString(object.Metadata[signatureMetadataKey])
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode signature: %w", err)
+	}
+	return manifest, signature, nil
+}
+
 func (s *S3) objectExpiration() *time.Time {
 	if s.lifetime <= 0 {
 		return nil
@@ -377,6 +402,10 @@ func (*S3) makeMetadata(request *cacheprog.PutRequest) map[string]string {
 	}
 	if request.UncompressedSize > 0 {
 		ret[uncompressedSizeMetadataKey] = fmt.Sprintf("%d", request.UncompressedSize)
+	}
+	if len(request.Manifest) > 0 {
+		ret[manifestMetadataKey] = base64.StdEncoding.EncodeToString(request.Manifest)
+		ret[signatureMetadataKey] = base64.StdEncoding.EncodeToString(request.Signature)
 	}
 	return ret
 }

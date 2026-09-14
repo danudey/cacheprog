@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/platacard/cacheprog/internal/app/cacheprog"
@@ -13,6 +15,7 @@ import (
 	"github.com/platacard/cacheprog/internal/infra/compression"
 	"github.com/platacard/cacheprog/internal/infra/logging"
 	"github.com/platacard/cacheprog/internal/infra/metrics"
+	"github.com/platacard/cacheprog/internal/infra/signing"
 	"github.com/platacard/cacheprog/internal/infra/storage"
 )
 
@@ -32,12 +35,24 @@ type CacheprogAppArgs struct {
 type RemoteStorageArgs struct {
 	S3Args
 	HTTPStorageArgs
+	SigningArgs
 
 	RemoteStorageType    string        `arg:"--remote-storage-type,env:REMOTE_STORAGE_TYPE" placeholder:"TYPE" default:"disabled" help:"Remote storage type. Available: s3, http, disabled"`
 	MaxConsecutiveErrors int64         `arg:"--max-consecutive-errors,env:REMOTE_STORAGE_MAX_CONSECUTIVE_ERRORS" default:"10" placeholder:"NUM" help:"Max number of consecutive errors to tolerate before disabling the remote storage, zero or negative value means unlimited"`
 	RetryAfter           time.Duration `arg:"--retry-after,env:REMOTE_STORAGE_RETRY_AFTER" default:"15s" placeholder:"DURATION" help:"How long to wait before probing remote storage after circuit breaker trips, zero disables recovery"`
 
 	AllowInsecureHTTPRemotes bool `arg:"--allow-insecure-http-remotes,env:ALLOW_INSECURE_HTTP_REMOTES" help:"Allow plaintext http:// (and minio+http://) remote storage and credentials endpoints. Insecure: traffic can be read or tampered with in transit, poisoning builds. Intended only for local testing."`
+}
+
+type SigningArgs struct {
+	SigningAlgorithm  string `arg:"--signing-algorithm,env:SIGNING_ALGORITHM" placeholder:"ALG" help:"Sign uploaded objects and verify fetched ones. Available: hmac-sha256, ed25519. Empty disables signing."`
+	SigningKey        string `arg:"--signing-key,env:SIGNING_KEY" placeholder:"KEY" help:"Signing key material (HMAC secret, or PEM ed25519 private key). Prefer --signing-key-file to keep secrets out of the process environment."`
+	SigningKeyFile    string `arg:"--signing-key-file,env:SIGNING_KEY_FILE" placeholder:"PATH" help:"Path to a file containing the signing key. For HMAC a single trailing newline is stripped."`
+	SigningKeyID      string `arg:"--signing-key-id,env:SIGNING_KEY_ID" placeholder:"ID" help:"Non-secret identifier of the signing key, used for rotation (HMAC only; ed25519 derives ids from the public key). Defaults to a digest of the key."`
+	VerifyKeys        string `arg:"--verify-keys,env:VERIFY_KEYS" placeholder:"PEM" help:"ed25519 only: PEM-encoded public keys to trust on verification. Used by verify-only readers and for key rotation."`
+	VerifyKeysFile    string `arg:"--verify-keys-file,env:VERIFY_KEYS_FILE" placeholder:"PATH" help:"Path to a file containing PEM-encoded ed25519 public keys to trust on verification."`
+	SignatureLocation string `arg:"--signature-location,env:SIGNATURE_LOCATION" placeholder:"LOC" default:"inline" help:"Where the signature is stored. Available: inline, metadata."`
+	RequireSignature  bool   `arg:"--require-signature,env:REQUIRE_SIGNATURE" help:"Reject unsigned objects on fetch instead of passing them through. Enable once the cache has refilled with signed objects."`
 }
 
 type S3Args struct {
@@ -66,7 +81,19 @@ type MetricsPushArgs struct {
 	ExtraHeaders []httpHeader      `arg:"--metrics-push-extra-headers,env:METRICS_PUSH_EXTRA_HEADERS" placeholder:"[key:value]" help:"Extra headers to be added to each request."`
 }
 
-func (r *RemoteStorageArgs) configureRemoteStorage() (cacheprog.RemoteStorage, error) {
+// configureRemoteStorage builds the remote storage stack. readOnly is true when
+// signing is configured for verification only (no usable signing key); callers
+// should then refuse remote puts, since this node can validate cached objects
+// but must not publish unsigned ones.
+func (r *RemoteStorageArgs) configureRemoteStorage() (storage cacheprog.RemoteStorage, readOnly bool, err error) {
+	base, err := r.configureBaseStorage()
+	if err != nil || base == nil {
+		return base, false, err
+	}
+	return r.wrapWithSigning(base)
+}
+
+func (r *RemoteStorageArgs) configureBaseStorage() (cacheprog.RemoteStorage, error) {
 	switch r.RemoteStorageType {
 	case "s3":
 		slog.Info("Using S3 remote storage")
@@ -95,6 +122,113 @@ func (r *RemoteStorageArgs) configureRemoteStorage() (cacheprog.RemoteStorage, e
 	}
 }
 
+func (r *RemoteStorageArgs) wrapWithSigning(base cacheprog.RemoteStorage) (cacheprog.RemoteStorage, bool, error) {
+	key, err := r.loadSigningKey()
+	if err != nil {
+		return nil, false, err
+	}
+	verifyKeys, err := r.loadVerifyKeys()
+	if err != nil {
+		return nil, false, err
+	}
+
+	// A signing key that was supplied but is blank (e.g. an empty secret in a CI
+	// template that always defines the variable) is treated as "no signing key":
+	// drop it and fall back to verification only, so the node can still validate
+	// cached objects without publishing unsigned ones.
+	if len(bytes.TrimSpace(key)) == 0 && r.signingKeyProvided() {
+		slog.Warn("Signing key was provided but is blank; ignoring it and continuing with verification only")
+		key = nil
+	}
+
+	signer, carrier, enabled, err := signing.Configure(signing.Config{
+		Algorithm:  r.SigningAlgorithm,
+		Key:        key,
+		KeyID:      r.SigningKeyID,
+		VerifyKeys: verifyKeys,
+		Location:   r.SignatureLocation,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to configure signing: %w", err)
+	}
+	if !enabled {
+		return base, false, nil
+	}
+
+	// Verification keys but no usable signing key: this node can validate cached
+	// objects but cannot sign new ones, so switch to read-only (disable puts)
+	// rather than silently dropping every upload.
+	readOnly := !signer.CanSign()
+	if readOnly {
+		slog.Warn("Signing is configured for verification only (no signing key); switching to read-only mode, remote puts are disabled")
+	}
+
+	slog.Info("Object signing enabled",
+		"algorithm", r.SigningAlgorithm,
+		"location", carrier.Name(),
+		"key_id", signer.KeyID(),
+		"require", r.RequireSignature,
+		"read_only", readOnly,
+	)
+	return signing.NewRemoteStorage(base, signer, carrier, r.RequireSignature), readOnly, nil
+}
+
+// signingKeyProvided reports whether the user supplied a signing key source at
+// all — a flag, an environment variable, or a key file — regardless of whether
+// it resolved to a non-empty value. This lets us tell "blank key was provided"
+// (warn and degrade to verify-only) apart from "no key configured".
+func (r *RemoteStorageArgs) signingKeyProvided() bool {
+	if r.SigningKey != "" || r.SigningKeyFile != "" {
+		return true
+	}
+	// go-arg applies the CACHEPROG_ env prefix, so these are the names actually
+	// read. An env var set to an empty value still counts as "provided".
+	for _, env := range []string{"CACHEPROG_SIGNING_KEY", "CACHEPROG_SIGNING_KEY_FILE"} {
+		if _, ok := os.LookupEnv(env); ok {
+			return true
+		}
+	}
+	// An explicit, possibly empty, --signing-key / --signing-key-file flag.
+	for _, a := range os.Args {
+		if a == "--signing-key" || a == "--signing-key-file" ||
+			strings.HasPrefix(a, "--signing-key=") || strings.HasPrefix(a, "--signing-key-file=") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *RemoteStorageArgs) loadSigningKey() ([]byte, error) {
+	if r.SigningKeyFile != "" {
+		data, err := os.ReadFile(r.SigningKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read signing key file: %w", err)
+		}
+		// strip a single trailing newline that editors/shells commonly add
+		data = bytes.TrimRight(data, "\n")
+		data = bytes.TrimRight(data, "\r")
+		return data, nil
+	}
+	if r.SigningKey != "" {
+		return []byte(r.SigningKey), nil
+	}
+	return nil, nil
+}
+
+func (r *RemoteStorageArgs) loadVerifyKeys() ([]byte, error) {
+	if r.VerifyKeysFile != "" {
+		data, err := os.ReadFile(r.VerifyKeysFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read verify keys file: %w", err)
+		}
+		return data, nil
+	}
+	if r.VerifyKeys != "" {
+		return []byte(r.VerifyKeys), nil
+	}
+	return nil, nil
+}
+
 func (a *CacheprogAppArgs) Run(ctx context.Context) error {
 	defer func() {
 		if err := metrics.PushMetrics(ctx, metrics.PushConfig{
@@ -109,9 +243,12 @@ func (a *CacheprogAppArgs) Run(ctx context.Context) error {
 
 	defer metrics.ObserveOverallRunTime()()
 
-	remoteStorage, err := a.configureRemoteStorage()
+	remoteStorage, readOnly, err := a.configureRemoteStorage()
 	if err != nil {
 		return fmt.Errorf("failed to configure remote storage: %w", err)
+	}
+	if readOnly {
+		a.DisablePut = true
 	}
 
 	if remoteStorage != nil && a.MaxConsecutiveErrors > 0 {
