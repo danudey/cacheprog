@@ -40,8 +40,8 @@
 
   "packages": {
     ".": {
-      "release-type": "simple",
-      "package-name": "CHANGE-ME",
+      "release-type": "go",
+      "package-name": "cacheprog",
 
       "//": [
         "The changelog sections. A type with `hidden: true` still counts",
