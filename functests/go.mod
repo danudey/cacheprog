@@ -1,6 +1,6 @@
 module github.com/platacard/cacheprog/functests
 
-go 1.26.3
+go 1.26.8
 
 require (
 	github.com/docker/go-connections v0.7.0
@@ -25,7 +25,7 @@ require (
 	github.com/compose-spec/compose-go/v2 v2.15.0 // indirect
 	github.com/containerd/console v1.0.5 // indirect
 	github.com/containerd/containerd/api v1.11.1 // indirect
-	github.com/containerd/containerd/v2 v2.3.5 // indirect
+	github.com/containerd/containerd/v2 v2.3.6 // indirect
 	github.com/containerd/continuity v0.5.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
