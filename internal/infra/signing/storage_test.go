@@ -130,6 +130,20 @@ func TestRemoteStorage_TamperedManifest_IsMiss(t *testing.T) {
 	assert.ErrorIs(t, err, cacheprog.ErrNotFound)
 }
 
+func TestRemoteStorage_ReplayedUnderOtherActionID_IsMiss(t *testing.T) {
+	s, fake := newTestStore(t, true)
+	victim := []byte("action-victim")
+	attacker := []byte("action-attacker")
+	putObject(t, s, attacker, []byte("malicious-payload"))
+
+	// copy a validly signed object to another cache key, as someone with write
+	// access to the bucket could
+	fake.objects[hex.EncodeToString(victim)] = fake.objects[hex.EncodeToString(attacker)]
+
+	_, err := s.Get(context.Background(), &cacheprog.GetRequest{ActionID: victim})
+	assert.ErrorIs(t, err, cacheprog.ErrNotFound)
+}
+
 func TestRemoteStorage_WrongKey_IsMiss(t *testing.T) {
 	signerA, _ := NewHMACSigner([]byte("secret-a"), "key-1")
 	signerB, _ := NewHMACSigner([]byte("secret-b"), "key-1")
