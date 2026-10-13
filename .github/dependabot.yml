@@ -36,7 +36,9 @@ updates:
   #     - /
   #     - /tools
   - package-ecosystem: gomod
-    directory: /
+    directories:
+      - /
+      - /functests
     schedule:
       interval: weekly
       day: monday
@@ -100,7 +102,6 @@ updates:
   #   FROM alpine:3.21@sha256:...
   # Dependabot updates both the tag and the digest together.
   - package-ecosystem: docker
-    directory: /
     # Several Dockerfiles in different directories need one entry each, or a
     # `directories:` list:
     directories:
