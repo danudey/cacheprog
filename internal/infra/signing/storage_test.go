@@ -205,6 +205,7 @@ type errStorage struct{}
 func (errStorage) Put(context.Context, *cacheprog.PutRequest) (*cacheprog.PutResponse, error) {
 	return nil, errors.New("boom")
 }
+
 func (errStorage) Get(context.Context, *cacheprog.GetRequest) (*cacheprog.GetResponse, error) {
 	return nil, errors.New("boom")
 }
