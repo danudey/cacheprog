@@ -92,6 +92,37 @@ Remote storage endpoints (S3 endpoint, S3 credentials endpoint and HTTP storage 
 
 If you genuinely need plaintext for local testing (e.g. talking to a local Minio or to a `cacheprog proxy` over loopback) set `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true` (flag: `--allow-insecure-http-remotes`). A warning is logged whenever an insecure endpoint is used. **Do not enable this in production.**
 
+#### Object signing
+
+Transport security protects objects in flight, but anyone who can **write** to the storage backend can still place a malicious object under a legitimate cache key and poison every build that fetches it — the Go cache has no built-in authenticity binding between a key and its output. Object signing closes that gap: a small manifest binding the cache key (`ActionID`) to its output (`OutputID`) and a digest of the stored bytes is **signed on upload and verified on download**. An object that fails verification is treated as a cache miss (the compiler rebuilds), so a tampered cache can never inject code into a build.
+
+Only the manifest is signed — never the (larger) payload — so the per-object cost is negligible regardless of algorithm; choose by trust model:
+
+* **`hmac-sha256`**: symmetric. Fast and simple. Defends against in-transit tampering and anyone who does not hold the secret. Note that every party able to *verify* also holds the secret and could therefore *forge*, so this is best when all cache participants are equally trusted.
+* **`ed25519`**: asymmetric. The private key signs and public keys verify, so untrusted readers (e.g. fork/PR jobs) can verify the cache but cannot forge entries. Give the private key only to trusted writers (e.g. post-merge pipelines) and the public key to everyone. A node with only public keys is verify-only and never uploads.
+
+Environment variables:
+* `CACHEPROG_SIGNING_ALGORITHM` - Signing algorithm. Available: `hmac-sha256`, `ed25519`. Empty (default) disables signing.
+* `CACHEPROG_SIGNING_KEY` - Signing key material: the HMAC secret, or a PEM PKCS#8 ed25519 private key (e.g. from `openssl genpkey -algorithm ed25519`). Prefer the file form below to keep secrets out of the process environment.
+* `CACHEPROG_SIGNING_KEY_FILE` - Path to a file containing the signing key. For HMAC a single trailing newline is stripped.
+* `CACHEPROG_SIGNING_KEY_ID` - Non-secret identifier of the signing key, used for rotation. HMAC only; defaults to a digest of the key. ed25519 derives key ids from the public key automatically.
+* `CACHEPROG_VERIFY_KEYS` / `CACHEPROG_VERIFY_KEYS_FILE` - ed25519 only: one or more PEM public keys to trust on verification. Required for verify-only readers, and lets you trust several keys at once for rotation.
+* `CACHEPROG_SIGNATURE_LOCATION` - Where the signature travels. `inline` (default) wraps the stored object in a small self-describing container — storage-agnostic and proxy-friendly. `metadata` stores the signature out-of-band in S3 object metadata / HTTP headers, leaving the body as the raw payload (consumable by other tools; subject to the backend's metadata size limits).
+* `CACHEPROG_REQUIRE_SIGNATURE` - If `true`, unsigned objects are rejected on fetch instead of passed through. Roll out by signing with this `false` first so the cache refills with signed objects, then flip it to `true`.
+
+The signature is verified before decompression, and the authenticated `UncompressedSize` bounds decompression, so signing also hardens the decompression-bomb protection.
+
+For asymmetric setups, generate a keypair with:
+```bash
+openssl genpkey -algorithm ed25519 -out cacheprog-signing.pem
+openssl pkey -in cacheprog-signing.pem -pubout -out cacheprog-signing.pub
+```
+Give `cacheprog-signing.pem` (via `CACHEPROG_SIGNING_KEY_FILE`) to trusted writers and `cacheprog-signing.pub` (via `CACHEPROG_VERIFY_KEYS_FILE`) to everyone else.
+
+This makes it easy to use one configuration across all CI environments: set the verification keys everywhere and add a signing key only where the cache should be written.
+* If a signing key is **provided but blank** (e.g. an empty CI secret), cacheprog logs a warning, ignores it, and continues with verification only.
+* If verification keys are configured but **no signing key** is available, cacheprog logs a warning and switches to **read-only mode** — remote puts are disabled, exactly as if `CACHEPROG_DISABLE_PUT=true` were set — so the node never publishes unsigned objects.
+
 ### S3-compatible storage configuration
 
 Environment variables for S3-compatible storage are:

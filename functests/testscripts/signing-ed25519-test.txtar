@@ -1,0 +1,65 @@
+[short] skip 'remote storage is not available in short mode'
+
+env COMPILER_EXPRESSION='(compile|gccgo)( |\.exe).*main\.go'
+
+# ed25519 (asymmetric) signing with the signature stored in object metadata
+env CACHEPROG_SIGNING_ALGORITHM=ed25519
+env CACHEPROG_SIGNATURE_LOCATION=metadata
+env CACHEPROG_REQUIRE_SIGNATURE=true
+
+mkdir -p $WORK/disk-cache
+env CACHEPROG_ROOT_DIRECTORY=$WORK/disk-cache
+
+env CACHEPROG_REMOTE_STORAGE_TYPE=s3 CACHEPROG_S3_PREFIX=tests/signing-ed25519-test
+env MC_FULLPATH=${MINIO_ALIAS}/${CACHEPROG_S3_BUCKET}/${CACHEPROG_S3_PREFIX}
+mc rm --recursive --force ${MC_FULLPATH}
+
+# first build with the private key: compiles and uploads signed objects
+env CACHEPROG_SIGNING_KEY_FILE=$WORK/ed25519-key.pem
+set-cacheprog GOCACHEPROG
+go build -x -o test_bin$exe ./main.go
+stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+rm test_bin$exe
+
+mc du ${MC_FULLPATH}
+! stdout '(^|\W)0 object'
+
+# second build, clean disk, same signer: must be a verified remote cache hit
+rm ${CACHEPROG_ROOT_DIRECTORY}
+go build -x -o test_bin$exe ./main.go
+! stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+rm test_bin$exe
+
+# verify-only reader: only the PUBLIC key, no private key. Must still verify the
+# signed objects and serve them as a cache hit (no compiler invocation).
+rm ${CACHEPROG_ROOT_DIRECTORY}
+env CACHEPROG_SIGNING_KEY_FILE=
+env CACHEPROG_VERIFY_KEYS_FILE=$WORK/ed25519-pub.pem
+go build -x -o test_bin$exe ./main.go
+! stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+
+-- main.go --
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello ed25519!")
+}
+
+-- expected_output.txt --
+Hello ed25519!
+-- ed25519-key.pem --
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIK1/j4YEimHlq2EsKsOpFwTVuJufiS2gvuw7VdIRSazM
+-----END PRIVATE KEY-----
+-- ed25519-pub.pem --
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAkaBB34zkWEKt9oRqVatpvysxP9P74K+Joiz5g+H1C0g=
+-----END PUBLIC KEY-----

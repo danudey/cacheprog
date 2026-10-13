@@ -322,12 +322,10 @@ func TestRemoteStorageCircuitBreaker_HalfOpen(t *testing.T) {
 			var wg sync.WaitGroup
 
 			// Launch the probe goroutine
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				_, err := breaker.Get(context.Background(), &GetRequest{ActionID: []byte("probe")})
 				probeResult = err
-			}()
+			})
 
 			// Wait for the probe to start calling upstream
 			<-probeStarted
@@ -336,14 +334,12 @@ func TestRemoteStorageCircuitBreaker_HalfOpen(t *testing.T) {
 			const numRacers = 5
 			var racerWg sync.WaitGroup
 			for range numRacers {
-				racerWg.Add(1)
-				go func() {
-					defer racerWg.Done()
+				racerWg.Go(func() {
 					_, err := breaker.Get(context.Background(), &GetRequest{ActionID: []byte("racer")})
 					mu.Lock()
 					racerResults = append(racerResults, err)
 					mu.Unlock()
-				}()
+				})
 			}
 			racerWg.Wait()
 			synctest.Wait()

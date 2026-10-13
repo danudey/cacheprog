@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -26,6 +27,8 @@ const (
 	Sha256SumHeader            = HeaderPrefix + "Sha256Sum"
 	CompressionAlgorithmHeader = HeaderPrefix + "CompressionAlgorithm"
 	UncompressedSizeHeader     = HeaderPrefix + "UncompressedSize"
+	ManifestHeader             = HeaderPrefix + "Manifest"
+	SignatureHeader            = HeaderPrefix + "Signature"
 )
 
 func ParsePutRequest(r *http.Request) (*cacheprog.PutRequest, error) {
@@ -65,6 +68,10 @@ func ParsePutRequest(r *http.Request) (*cacheprog.PutRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse %s header: %w", UncompressedSizeHeader, err)
 	}
+	putRequest.Manifest, putRequest.Signature, err = parseSigningHeaders(r.Header)
+	if err != nil {
+		return nil, err
+	}
 
 	putRequest.Body = r.Body
 
@@ -89,6 +96,7 @@ func NewPutRequest(ctx context.Context, baseURL string, putRequest *cacheprog.Pu
 	req.Header.Set(Sha256SumHeader, hex.EncodeToString(putRequest.Sha256Sum))
 	req.Header.Set(CompressionAlgorithmHeader, putRequest.CompressionAlgorithm)
 	req.Header.Set(UncompressedSizeHeader, strconv.FormatInt(putRequest.UncompressedSize, 10))
+	setSigningHeaders(req.Header, putRequest.Manifest, putRequest.Signature)
 
 	return req, nil
 }
@@ -123,6 +131,7 @@ func WriteGetResponse(w http.ResponseWriter, getResponse *cacheprog.GetResponse)
 	w.Header().Set(OutputIDHeader, hex.EncodeToString(getResponse.OutputID))
 	w.Header().Set(CompressionAlgorithmHeader, getResponse.CompressionAlgorithm)
 	w.Header().Set(UncompressedSizeHeader, strconv.FormatInt(getResponse.UncompressedSize, 10))
+	setSigningHeaders(w.Header(), getResponse.Manifest, getResponse.Signature)
 	w.WriteHeader(http.StatusOK)
 	_, err := io.Copy(w, getResponse.Body)
 	return err
@@ -160,6 +169,10 @@ func ParseGetResponse(r *http.Response) (*cacheprog.GetResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse %s header: %w", UncompressedSizeHeader, err)
 	}
+	getResponse.Manifest, getResponse.Signature, err = parseSigningHeaders(r.Header)
+	if err != nil {
+		return nil, err
+	}
 	getResponse.Size = r.ContentLength
 
 	getResponse.Body = r.Body
@@ -169,4 +182,32 @@ func ParseGetResponse(r *http.Response) (*cacheprog.GetResponse, error) {
 
 func addPathToURL(baseURL string, pathItems ...string) string {
 	return strings.TrimSuffix(baseURL, "/") + "/" + path.Join(pathItems...)
+}
+
+// setSigningHeaders writes the (base64-encoded) manifest and signature headers
+// when present. Empty values are omitted so unsigned objects carry no headers.
+func setSigningHeaders(h http.Header, manifest, signature []byte) {
+	if len(manifest) == 0 {
+		return
+	}
+	h.Set(ManifestHeader, base64.StdEncoding.EncodeToString(manifest))
+	h.Set(SignatureHeader, base64.StdEncoding.EncodeToString(signature))
+}
+
+// parseSigningHeaders decodes the manifest and signature headers. Absent
+// headers yield nil values and no error (the object is simply unsigned).
+func parseSigningHeaders(h http.Header) (manifest, signature []byte, err error) {
+	rawManifest := h.Get(ManifestHeader)
+	if rawManifest == "" {
+		return nil, nil, nil
+	}
+	manifest, err = base64.StdEncoding.DecodeString(rawManifest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse %s header: %w", ManifestHeader, err)
+	}
+	signature, err = base64.StdEncoding.DecodeString(h.Get(SignatureHeader))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse %s header: %w", SignatureHeader, err)
+	}
+	return manifest, signature, nil
 }
