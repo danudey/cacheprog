@@ -71,10 +71,17 @@ func (a *ProxyAppArgs) Run(ctx context.Context) error {
 			"address", a.ListenAddress)
 	}
 
+	// Accept HTTP/2 without TLS (h2c) next to HTTP/1.1 so clients with
+	// --http-storage-h2c can multiplex requests over one connection.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
 	srv := &http.Server{
 		Addr:              a.ListenAddress,
 		Handler:           handler,
 		ReadHeaderTimeout: time.Minute,
+		Protocols:         protocols,
 	}
 	defer context.AfterFunc(ctx, func() {
 		_ = srv.Close()

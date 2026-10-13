@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/platacard/cacheprog/internal/app/cacheprog"
 )
@@ -25,18 +27,69 @@ func NewHTTP(client *http.Client, endpoint string, extraHeaders http.Header) *HT
 	}
 }
 
-func ConfigureHTTP(baseURL string, extraHeaders http.Header, allowInsecure bool) (*HTTP, error) {
-	if baseURL == "" {
+// DefaultHTTPMaxIdleConnsPerHost is the default number of idle keep-alive
+// connections kept per host. The Go compiler issues many cache requests in
+// parallel; net/http's default of 2 makes most of them open a fresh connection.
+const DefaultHTTPMaxIdleConnsPerHost = 64
+
+type HTTPConfig struct {
+	BaseURL      string
+	ExtraHeaders http.Header
+
+	// AllowInsecure permits plaintext http:// base URLs.
+	AllowInsecure bool
+
+	// MaxIdleConnsPerHost is the number of idle keep-alive connections kept
+	// per host, DefaultHTTPMaxIdleConnsPerHost if zero or negative.
+	MaxIdleConnsPerHost int
+
+	// H2C makes requests to http:// base URLs use HTTP/2 without TLS (prior
+	// knowledge), multiplexing all requests over one connection. The server
+	// must support it. Ignored for https:// base URLs, which negotiate HTTP/2
+	// via TLS anyway.
+	H2C bool
+}
+
+func ConfigureHTTP(cfg HTTPConfig) (*HTTP, error) {
+	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("base URL is required")
 	}
 
-	if err := checkRemoteURLScheme("HTTP storage base URL", baseURL, allowInsecure); err != nil {
+	if err := checkRemoteURLScheme("HTTP storage base URL", cfg.BaseURL, cfg.AllowInsecure); err != nil {
 		return nil, err
 	}
 
-	slog.Info("Configuring HTTP storage with base URL", slog.String("baseURL", baseURL))
+	u, err := url.Parse(cfg.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse HTTP storage base URL: %w", err)
+	}
+	h2c := cfg.H2C && strings.EqualFold(u.Scheme, "http")
+	if cfg.H2C && !h2c {
+		slog.Warn("HTTP/2 without TLS (h2c) applies only to http:// base URLs, ignoring", slog.String("scheme", u.Scheme))
+	}
 
-	return NewHTTP(http.DefaultClient, baseURL, extraHeaders), nil
+	slog.Info("Configuring HTTP storage with base URL", slog.String("baseURL", cfg.BaseURL), slog.Bool("h2c", h2c))
+
+	return NewHTTP(&http.Client{Transport: newHTTPTransport(cfg.MaxIdleConnsPerHost, h2c)}, cfg.BaseURL, cfg.ExtraHeaders), nil
+}
+
+func newHTTPTransport(maxIdleConnsPerHost int, h2c bool) *http.Transport {
+	if maxIdleConnsPerHost <= 0 {
+		maxIdleConnsPerHost = DefaultHTTPMaxIdleConnsPerHost
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	transport.MaxIdleConns = max(transport.MaxIdleConns, maxIdleConnsPerHost)
+
+	if h2c {
+		// Without HTTP1 in the set, http:// requests use HTTP/2 with prior knowledge.
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		transport.Protocols = protocols
+	}
+
+	return transport
 }
 
 func (h *HTTP) Get(ctx context.Context, request *cacheprog.GetRequest) (*cacheprog.GetResponse, error) {
