@@ -87,7 +87,7 @@ func (s *RemoteStorage) Get(ctx context.Context, req *cacheprog.GetRequest) (*ca
 		return resp, nil
 	}
 
-	verified, err := s.verify(manifestBytes, sig, payload)
+	verified, err := s.verify(req.ActionID, manifestBytes, sig, payload)
 	_ = payload.Close()
 	if err != nil {
 		return nil, s.reject(ctx, "signature verification failed", err)
@@ -108,7 +108,7 @@ type verifiedObject struct {
 	payload  []byte
 }
 
-func (s *RemoteStorage) verify(manifestBytes, sig []byte, payload io.Reader) (*verifiedObject, error) {
+func (s *RemoteStorage) verify(actionID, manifestBytes, sig []byte, payload io.Reader) (*verifiedObject, error) {
 	manifest, err := UnmarshalManifest(manifestBytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
@@ -118,6 +118,12 @@ func (s *RemoteStorage) verify(manifestBytes, sig []byte, payload io.Reader) (*v
 	}
 	if err := s.signer.Verify(manifest.KeyID, manifestBytes, sig); err != nil {
 		return nil, fmt.Errorf("verify signature: %w", err)
+	}
+	// A valid signature only proves we signed this manifest for some key. Without
+	// this check, a signed object copied to another cache key would be served as
+	// that key's output.
+	if !bytes.Equal(manifest.ActionID, actionID) {
+		return nil, fmt.Errorf("manifest action id does not match requested action id")
 	}
 
 	// The compressed size is authenticated, so it is a trustworthy bound on how
