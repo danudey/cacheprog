@@ -8,6 +8,7 @@ set-cacheprog CACHEPROG_PATH
 allocate-port CACHEPROG_SERVER_PORT
 env CACHEPROG_PROXY_LISTEN_ADDRESS=localhost:${CACHEPROG_SERVER_PORT}
 exec ${CACHEPROG_PATH} proxy &proxy&
+wait-for-port localhost:${CACHEPROG_SERVER_PORT}
 
 # prepare client cacheprog environment; errors must not be hidden by the circuit breaker
 mkdir -p $WORK/disk-cache
@@ -35,7 +36,7 @@ cmp stdout expected_output.txt
 
 # the client must have used h2c and seen no transport errors
 grep 'h2c=true' $WORK/client.log
-! grep 'level=ERROR' $WORK/client.log
+! grep '(^| )ERRO ' $WORK/client.log
 
 kill -INT proxy
 wait proxy

@@ -26,7 +26,7 @@ func TestCheckRemoteURLScheme(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkRemoteURLScheme("test endpoint", tt.rawURL, tt.allowInsecure)
+			_, err := checkRemoteURLScheme("test endpoint", tt.rawURL, tt.allowInsecure)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "test endpoint")

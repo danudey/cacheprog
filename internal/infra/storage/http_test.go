@@ -215,8 +215,10 @@ func TestConfigureHTTP_ReusesConnections(t *testing.T) {
 	runConcurrentGets(t, client, rounds, parallel)
 
 	// net/http's default of 2 idle connections per host would open ~parallel-2
-	// new connections every round after the first.
-	assert.LessOrEqual(t, newConns.Load(), int64(parallel))
+	// new connections every round after the first (about 58 here). Allow some
+	// slack: net/http returns a connection to the idle pool asynchronously,
+	// after the body has been read, so a few may still be busy next round.
+	assert.LessOrEqual(t, newConns.Load(), int64(parallel+parallel/2))
 	assert.Zero(t, http2Requests.Load(), "HTTP/1.1 expected without h2c")
 }
 

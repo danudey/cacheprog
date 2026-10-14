@@ -7,8 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 
 	"github.com/platacard/cacheprog/internal/app/cacheprog"
 )
@@ -32,6 +30,16 @@ func NewHTTP(client *http.Client, endpoint string, extraHeaders http.Header) *HT
 // parallel; net/http's default of 2 makes most of them open a fresh connection.
 const DefaultHTTPMaxIdleConnsPerHost = 64
 
+// HTTP2MaxReceiveBufferPerConnection and HTTP2MaxReceiveBufferPerStream size
+// the HTTP/2 flow-control windows used with h2c. h2c sends all parallel
+// requests over one connection, so net/http's defaults (about 1MB per
+// connection) would cap throughput at about 1MB per round trip on links with
+// real latency.
+const (
+	HTTP2MaxReceiveBufferPerConnection = 64 << 20
+	HTTP2MaxReceiveBufferPerStream     = 16 << 20
+)
+
 type HTTPConfig struct {
 	BaseURL      string
 	ExtraHeaders http.Header
@@ -45,7 +53,7 @@ type HTTPConfig struct {
 
 	// H2C makes requests to http:// base URLs use HTTP/2 without TLS (prior
 	// knowledge), multiplexing all requests over one connection. The server
-	// must support it. Ignored for https:// base URLs, which negotiate HTTP/2
+	// must support it. Redirects to https:// URLs still work. Ignored for https:// base URLs, which negotiate HTTP/2
 	// via TLS anyway.
 	H2C bool
 }
@@ -55,15 +63,11 @@ func ConfigureHTTP(cfg HTTPConfig) (*HTTP, error) {
 		return nil, fmt.Errorf("base URL is required")
 	}
 
-	if err := checkRemoteURLScheme("HTTP storage base URL", cfg.BaseURL, cfg.AllowInsecure); err != nil {
+	u, err := checkRemoteURLScheme("HTTP storage base URL", cfg.BaseURL, cfg.AllowInsecure)
+	if err != nil {
 		return nil, err
 	}
-
-	u, err := url.Parse(cfg.BaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse HTTP storage base URL: %w", err)
-	}
-	h2c := cfg.H2C && strings.EqualFold(u.Scheme, "http")
+	h2c := cfg.H2C && u.Scheme == schemeHTTP // url.Parse lower-cases the scheme
 	if cfg.H2C && !h2c {
 		slog.Warn("HTTP/2 without TLS (h2c) applies only to http:// base URLs, ignoring", slog.String("scheme", u.Scheme))
 	}
@@ -83,10 +87,17 @@ func newHTTPTransport(maxIdleConnsPerHost int, h2c bool) *http.Transport {
 	transport.MaxIdleConns = max(transport.MaxIdleConns, maxIdleConnsPerHost)
 
 	if h2c {
-		// Without HTTP1 in the set, http:// requests use HTTP/2 with prior knowledge.
+		// Without HTTP1 in the set, http:// requests use HTTP/2 with prior
+		// knowledge. HTTP2 keeps https:// usable, e.g. for a redirect to a
+		// presigned URL.
 		protocols := new(http.Protocols)
 		protocols.SetUnencryptedHTTP2(true)
+		protocols.SetHTTP2(true)
 		transport.Protocols = protocols
+		transport.HTTP2 = &http.HTTP2Config{
+			MaxReceiveBufferPerConnection: HTTP2MaxReceiveBufferPerConnection,
+			MaxReceiveBufferPerStream:     HTTP2MaxReceiveBufferPerStream,
+		}
 	}
 
 	return transport

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/platacard/cacheprog/internal/app/proxy"
+	"github.com/platacard/cacheprog/internal/infra/storage"
 )
 
 type ProxyAppArgs struct {
@@ -81,7 +82,17 @@ func (a *ProxyAppArgs) Run(ctx context.Context) error {
 		Addr:              a.ListenAddress,
 		Handler:           handler,
 		ReadHeaderTimeout: time.Minute,
-		Protocols:         protocols,
+		// ReadHeaderTimeout does not apply to each HTTP/2 stream, so close
+		// idle connections to stop unused h2c connections staying open forever.
+		IdleTimeout: 2 * time.Minute,
+		Protocols:   protocols,
+		HTTP2: &http.HTTP2Config{
+			MaxConcurrentStreams: 128,
+			// Uploads from all streams share one h2c connection; see
+			// storage.HTTP2MaxReceiveBufferPerConnection.
+			MaxReceiveBufferPerConnection: storage.HTTP2MaxReceiveBufferPerConnection,
+			MaxReceiveBufferPerStream:     storage.HTTP2MaxReceiveBufferPerStream,
+		},
 	}
 	defer context.AfterFunc(ctx, func() {
 		_ = srv.Close()

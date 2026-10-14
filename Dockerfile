@@ -1,4 +1,4 @@
-ARG GO_IMAGE=golang:alpine
+ARG GO_IMAGE=golang:1.26-alpine
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS builder
 
@@ -9,7 +9,6 @@ WORKDIR /app
 ENV \
     GOCACHE=/root/.cache/go-build \
     GOMODCACHE=/root/.cache/go-mod \
-    GOTOOLCHAIN=auto \
     CGO_ENABLED=0 \
     GOOS=$TARGETOS \
     GOARCH=$TARGETARCH
