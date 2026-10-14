@@ -48,6 +48,39 @@ func isNonLoopbackListenAddress(addr string) bool {
 	return !ip.IsLoopback()
 }
 
+// Limits for the proxy's HTTP server.
+const (
+	proxyReadHeaderTimeout    = time.Minute
+	proxyIdleTimeout          = 2 * time.Minute
+	proxyMaxConcurrentStreams = 128
+)
+
+// newProxyServer returns the proxy's HTTP server. It accepts HTTP/2 without
+// TLS (h2c) next to HTTP/1.1 so clients with --http-storage-h2c can multiplex
+// requests over one connection.
+func newProxyServer(addr string, handler http.Handler) *http.Server {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: proxyReadHeaderTimeout,
+		// ReadHeaderTimeout does not apply to each HTTP/2 stream, so close
+		// idle connections to stop unused h2c connections staying open forever.
+		IdleTimeout: proxyIdleTimeout,
+		Protocols:   protocols,
+		HTTP2: &http.HTTP2Config{
+			MaxConcurrentStreams: proxyMaxConcurrentStreams,
+			// Uploads from all streams share one h2c connection; see
+			// storage.HTTP2MaxReceiveBufferPerConnection.
+			MaxReceiveBufferPerConnection: storage.HTTP2MaxReceiveBufferPerConnection,
+			MaxReceiveBufferPerStream:     storage.HTTP2MaxReceiveBufferPerStream,
+		},
+	}
+}
+
 func (a *ProxyAppArgs) Run(ctx context.Context) error {
 	// The proxy has no put-disabling switch of its own; in verify-only mode the
 	// signing layer already refuses to publish objects it cannot sign.
@@ -72,28 +105,7 @@ func (a *ProxyAppArgs) Run(ctx context.Context) error {
 			"address", a.ListenAddress)
 	}
 
-	// Accept HTTP/2 without TLS (h2c) next to HTTP/1.1 so clients with
-	// --http-storage-h2c can multiplex requests over one connection.
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-
-	srv := &http.Server{
-		Addr:              a.ListenAddress,
-		Handler:           handler,
-		ReadHeaderTimeout: time.Minute,
-		// ReadHeaderTimeout does not apply to each HTTP/2 stream, so close
-		// idle connections to stop unused h2c connections staying open forever.
-		IdleTimeout: 2 * time.Minute,
-		Protocols:   protocols,
-		HTTP2: &http.HTTP2Config{
-			MaxConcurrentStreams: 128,
-			// Uploads from all streams share one h2c connection; see
-			// storage.HTTP2MaxReceiveBufferPerConnection.
-			MaxReceiveBufferPerConnection: storage.HTTP2MaxReceiveBufferPerConnection,
-			MaxReceiveBufferPerStream:     storage.HTTP2MaxReceiveBufferPerStream,
-		},
-	}
+	srv := newProxyServer(a.ListenAddress, handler)
 	defer context.AfterFunc(ctx, func() {
 		_ = srv.Close()
 	})()
