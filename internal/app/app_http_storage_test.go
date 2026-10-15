@@ -1,11 +1,14 @@
 package app
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alexflint/go-arg"
 	"github.com/stretchr/testify/assert"
@@ -59,6 +62,73 @@ func TestHTTPStorageArgs_Parse(t *testing.T) {
 		assert.Equal(t, 11, parsed.ProxyApp.MaxIdleConns)
 		assert.True(t, parsed.ProxyApp.H2C)
 	})
+}
+
+// TestConfigureBaseStorage_HTTPMaxIdleConns checks that the parsed max idle
+// connections setting reaches the HTTP storage client: after a burst of
+// parallel requests, the client must keep exactly that many connections idle
+// and close the rest.
+func TestConfigureBaseStorage_HTTPMaxIdleConns(t *testing.T) {
+	const (
+		maxIdleConns = 3
+		burst        = maxIdleConns + 4
+	)
+
+	var arrived atomic.Int64
+	allArrived := make(chan struct{})
+	var opened, closed atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hold every request until the whole burst is in flight, so the
+		// client must open one connection per request.
+		if arrived.Add(1) == burst {
+			close(allArrived)
+		}
+		select {
+		case <-allArrived:
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			opened.Add(1)
+		case http.StateClosed:
+			closed.Add(1)
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	t.Setenv("CACHEPROG_REMOTE_STORAGE_TYPE", "http")
+	t.Setenv("CACHEPROG_HTTP_STORAGE_BASE_URL", server.URL+"/")
+	t.Setenv("CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES", "true")
+	t.Setenv("CACHEPROG_HTTP_STORAGE_MAX_IDLE_CONNS", strconv.Itoa(maxIdleConns))
+
+	parsed := parseArgs(t, "direct")
+	require.NotNil(t, parsed.CacheprogApp)
+
+	remote, err := parsed.CacheprogApp.configureBaseStorage()
+	require.NoError(t, err)
+	require.IsType(t, &storage.HTTP{}, remote)
+
+	var wg sync.WaitGroup
+	for i := range burst {
+		wg.Go(func() {
+			_, err := remote.Put(t.Context(), &cacheprog.PutRequest{ActionID: []byte{byte(i)}})
+			assert.NoError(t, err)
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(burst), opened.Load())
+	// The transport returns connections to the pool asynchronously, so wait
+	// for it to close the ones over the limit.
+	assert.Eventually(t, func() bool {
+		return closed.Load() == burst-maxIdleConns
+	}, 5*time.Second, 10*time.Millisecond,
+		"want %d of %d connections closed", burst-maxIdleConns, burst)
 }
 
 // TestConfigureBaseStorage_HTTPH2C checks that the H2C setting reaches the
