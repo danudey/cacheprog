@@ -137,7 +137,21 @@ func WriteGetResponse(w http.ResponseWriter, getResponse *cacheprog.GetResponse)
 	return err
 }
 
-func ParseGetResponse(r *http.Response) (*cacheprog.GetResponse, error) {
+// maxDrainOnError bounds how much of an unused response body is read before
+// closing it. Small bodies (e.g. a 404 page) are drained so the connection can
+// be reused; larger ones are just closed.
+const maxDrainOnError = 64 << 10
+
+// ParseGetResponse converts r into a GetResponse that owns r.Body. On error it
+// closes r.Body itself, since the caller gets no response to close.
+func ParseGetResponse(r *http.Response) (_ *cacheprog.GetResponse, err error) {
+	defer func() {
+		if err != nil {
+			_, _ = io.CopyN(io.Discard, r.Body, maxDrainOnError)
+			_ = r.Body.Close()
+		}
+	}()
+
 	if r.StatusCode == http.StatusNotFound {
 		return nil, cacheprog.ErrNotFound
 	}
@@ -151,10 +165,7 @@ func ParseGetResponse(r *http.Response) (*cacheprog.GetResponse, error) {
 		return nil, errors.New("content-length is unknown")
 	}
 
-	var (
-		getResponse cacheprog.GetResponse
-		err         error
-	)
+	var getResponse cacheprog.GetResponse
 
 	getResponse.OutputID, err = hex.DecodeString(r.Header.Get(OutputIDHeader))
 	if err != nil {

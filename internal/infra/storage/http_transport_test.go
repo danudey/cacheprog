@@ -3,12 +3,16 @@ package storage
 import (
 	"bytes"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/platacard/cacheprog/internal/app/cacheprog"
 )
 
 // An h2c transport must still reach https:// URLs, e.g. when an h2c server
@@ -126,6 +130,65 @@ func TestConfigureHTTP_Transport(t *testing.T) {
 			require.NotNil(t, transport.HTTP2)
 			assert.Equal(t, HTTP2MaxReceiveBufferPerConnection, transport.HTTP2.MaxReceiveBufferPerConnection)
 			assert.Equal(t, HTTP2MaxReceiveBufferPerStream, transport.HTTP2.MaxReceiveBufferPerStream)
+		})
+	}
+}
+
+// Failed Gets (cache misses, server errors, malformed responses) must release
+// their connection, so the next request reuses it instead of dialing again.
+func TestHTTP_GetErrorsReuseConnection(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		wantErr error
+	}{
+		{
+			name:    "not found",
+			handler: func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) },
+			wantErr: cacheprog.ErrNotFound,
+		},
+		{
+			name: "server error",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "boom", http.StatusInternalServerError)
+			},
+		},
+		{
+			name: "malformed headers",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(OutputIDHeader, "not hex")
+				_, _ = w.Write([]byte("payload"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opened atomic.Int64
+			server := httptest.NewUnstartedServer(tt.handler)
+			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					opened.Add(1)
+				}
+			}
+			server.Start()
+			t.Cleanup(server.Close)
+
+			h, err := ConfigureHTTP(HTTPConfig{BaseURL: server.URL, AllowInsecure: true})
+			require.NoError(t, err)
+
+			for range 5 {
+				_, err := h.Get(t.Context(), &cacheprog.GetRequest{ActionID: []byte{1, 2, 3, 4}})
+				require.Error(t, err)
+				if tt.wantErr != nil {
+					require.ErrorIs(t, err, tt.wantErr)
+				}
+			}
+
+			// The transport returns a drained connection to the pool
+			// asynchronously, so a later request may rarely dial again; a leak
+			// dials on every request.
+			assert.LessOrEqual(t, opened.Load(), int64(2), "failed Gets should reuse the connection")
 		})
 	}
 }

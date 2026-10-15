@@ -115,7 +115,7 @@ func (h *HTTP) Get(ctx context.Context, request *cacheprog.GetRequest) (*cachepr
 		}
 	}
 
-	resp, err := h.client.Do(req) //nolint:bodyclose // closed in upper layer
+	resp, err := h.client.Do(req) //nolint:bodyclose // owned by the returned response, closed by ParseGetResponse on error
 	if err != nil {
 		return nil, err
 	}
