@@ -117,8 +117,11 @@ func TestConfigureHTTP_Transport(t *testing.T) {
 			assert.GreaterOrEqual(t, transport.MaxIdleConns, tt.wantIdlePerHost)
 
 			if !tt.wantH2C {
-				assert.Nil(t, transport.Protocols, "default protocols expected without h2c")
-				assert.Nil(t, transport.HTTP2, "default HTTP/2 settings expected without h2c")
+				// Compare with the default transport rather than nil: its
+				// HTTP/2 settings differ between Go versions.
+				defaults := http.DefaultTransport.(*http.Transport)
+				assert.Equal(t, defaults.Protocols, transport.Protocols, "default protocols expected without h2c")
+				assert.Equal(t, defaults.HTTP2, transport.HTTP2, "default HTTP/2 settings expected without h2c")
 				return
 			}
 
