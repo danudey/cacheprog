@@ -72,6 +72,8 @@ type S3Args struct {
 type HTTPStorageArgs struct {
 	BaseURL      *url.URL     `arg:"--http-storage-base-url,env:HTTP_STORAGE_BASE_URL" placeholder:"URL" help:"Base URL for HTTP storage."`
 	ExtraHeaders []httpHeader `arg:"--http-storage-extra-headers,env:HTTP_STORAGE_EXTRA_HEADERS" placeholder:"[key:value]" help:"Extra headers to be added to each request."`
+	MaxIdleConns int          `arg:"--http-storage-max-idle-conns,env:HTTP_STORAGE_MAX_IDLE_CONNS" placeholder:"NUM" default:"64" help:"Max idle keep-alive connections to HTTP storage."`
+	H2C          bool         `arg:"--http-storage-h2c,env:HTTP_STORAGE_H2C" help:"Use HTTP/2 without TLS (h2c) for http:// base URLs, multiplexing requests over one connection. The server must support it; cacheprog proxy does."`
 }
 
 type MetricsPushArgs struct {
@@ -113,7 +115,13 @@ func (r *RemoteStorageArgs) configureBaseStorage() (cacheprog.RemoteStorage, err
 		})
 	case "http":
 		slog.Info("Using HTTP remote storage")
-		return storage.ConfigureHTTP(urlOrEmpty(r.BaseURL), headerValuesToHTTP(r.ExtraHeaders), r.AllowInsecureHTTPRemotes)
+		return storage.ConfigureHTTP(storage.HTTPConfig{
+			BaseURL:             urlOrEmpty(r.BaseURL),
+			ExtraHeaders:        headerValuesToHTTP(r.ExtraHeaders),
+			AllowInsecure:       r.AllowInsecureHTTPRemotes,
+			MaxIdleConnsPerHost: r.MaxIdleConns,
+			H2C:                 r.H2C,
+		})
 	case "disabled":
 		slog.Info("Disabled remote storage")
 		return nil, nil

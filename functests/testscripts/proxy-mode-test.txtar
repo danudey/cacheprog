@@ -8,6 +8,7 @@ env CACHEPROG_PROXY_LISTEN_ADDRESS=localhost:${CACHEPROG_SERVER_PORT}
 recording-server start CACHEPROG_METRICS_PROXY_ENDPOINT
 env CACHEPROG_METRICS_PROXY_EXTRA_HEADERS=X-Extra-Header:some CACHEPROG_METRICS_PROXY_EXTRA_LABELS=job=proxytest,labeltoproxy=valuetoproxy
 exec ${CACHEPROG_PATH} proxy &proxy&
+wait-for-port localhost:${CACHEPROG_SERVER_PORT}
 
 # prepare client cacheprog environment
 mkdir -p $WORK/disk-cache
