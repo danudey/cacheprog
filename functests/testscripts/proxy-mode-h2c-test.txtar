@@ -1,0 +1,54 @@
+# Same as proxy-mode-test, but the client talks to the proxy over HTTP/2 without TLS (h2c).
+
+# run server
+set-cacheprog CACHEPROG_PATH
+[!short] env CACHEPROG_REMOTE_STORAGE_TYPE=s3 CACHEPROG_S3_PREFIX=tests/proxy-mode-h2c-test CACHEPROG_REMOTE_STORAGE_MAX_CONSECUTIVE_ERRORS=-1
+[!short] env MC_FULLPATH=${MINIO_ALIAS}/${CACHEPROG_S3_BUCKET}/${CACHEPROG_S3_PREFIX}
+[!short] mc rm --recursive --force ${MC_FULLPATH}
+allocate-port CACHEPROG_SERVER_PORT
+env CACHEPROG_PROXY_LISTEN_ADDRESS=localhost:${CACHEPROG_SERVER_PORT}
+exec ${CACHEPROG_PATH} proxy &proxy&
+wait-for-port localhost:${CACHEPROG_SERVER_PORT}
+
+# prepare client cacheprog environment; errors must not be hidden by the circuit breaker
+mkdir -p $WORK/disk-cache
+env CACHEPROG_ROOT_DIRECTORY=$WORK/disk-cache
+env CACHEPROG_REMOTE_STORAGE_TYPE=http CACHEPROG_HTTP_STORAGE_BASE_URL=http://localhost:${CACHEPROG_SERVER_PORT}/ CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true
+env CACHEPROG_HTTP_STORAGE_H2C=true CACHEPROG_REMOTE_STORAGE_MAX_CONSECUTIVE_ERRORS=-1
+env CACHEPROG_LOG_OUTPUT=$WORK/client.log
+set-cacheprog GOCACHEPROG
+
+# run first time
+env COMPILER_EXPRESSION='(compile|gccgo)( |\.exe).*main\.go'
+go build -x -o test_bin$exe ./main.go
+stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+rm test_bin$exe
+
+# run second time with a clean disk cache: objects must come back through the h2c proxy
+rm ${CACHEPROG_ROOT_DIRECTORY}
+go build -x -o test_bin$exe ./main.go
+[!short] ! stderr ${COMPILER_EXPRESSION}
+[short] stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+
+# the client must have used h2c and seen no transport errors
+grep 'h2c=true' $WORK/client.log
+! grep '(^| )ERRO ' $WORK/client.log
+
+kill -INT proxy
+wait proxy
+
+-- main.go --
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello world!")
+}
+
+-- expected_output.txt --
+Hello world!

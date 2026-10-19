@@ -142,7 +142,7 @@ func ConfigureS3(cfg S3Config) (*S3, error) {
 		}
 
 		switch u.Scheme {
-		case "http", "https":
+		case schemeHTTP, "https":
 			awsOptions = append(awsOptions, awsConfig.WithBaseEndpoint(u.String()))
 		case "minio+http", "minio+https":
 			u.Scheme = strings.TrimPrefix(u.Scheme, "minio+")
@@ -203,10 +203,10 @@ func ConfigureS3(cfg S3Config) (*S3, error) {
 // was explicitly allowed. The credentials endpoint is checked too because
 // fetching credentials over plaintext would leak them.
 func validateS3Endpoints(cfg S3Config) error {
-	if err := checkRemoteURLScheme("S3 endpoint", cfg.Endpoint, cfg.AllowInsecureHTTP); err != nil {
+	if _, err := checkRemoteURLScheme("S3 endpoint", cfg.Endpoint, cfg.AllowInsecureHTTP); err != nil {
 		return err
 	}
-	if err := checkRemoteURLScheme("S3 credentials endpoint", cfg.CredentialsEndpoint, cfg.AllowInsecureHTTP); err != nil {
+	if _, err := checkRemoteURLScheme("S3 credentials endpoint", cfg.CredentialsEndpoint, cfg.AllowInsecureHTTP); err != nil {
 		return err
 	}
 	return nil
