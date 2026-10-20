@@ -59,6 +59,27 @@ func (h *HTTP) Get(ctx context.Context, request *cacheprog.GetRequest) (*cachepr
 	return ParseGetResponse(resp)
 }
 
+func (h *HTTP) Head(ctx context.Context, request *cacheprog.HeadRequest) (*cacheprog.HeadResponse, error) {
+	req, err := NewHeadRequest(ctx, h.endpoint, request)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, vs := range h.extraHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return ParseHeadResponse(resp)
+}
+
 func (h *HTTP) Put(ctx context.Context, request *cacheprog.PutRequest) (*cacheprog.PutResponse, error) {
 	req, err := NewPutRequest(ctx, h.endpoint, request)
 	if err != nil {

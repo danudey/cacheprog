@@ -82,6 +82,29 @@ func (b *RemoteStorageCircuitBreaker) Get(ctx context.Context, request *GetReque
 	return nil, err
 }
 
+func (b *RemoteStorageCircuitBreaker) Head(ctx context.Context, request *HeadRequest) (*HeadResponse, error) {
+	if b.isOpen() {
+		// report as "found" so callers skip the upload that would be discarded anyway
+		return &HeadResponse{}, nil
+	}
+
+	resp, err := b.upstream.Head(ctx, request)
+	switch {
+	case errors.Is(err, nil):
+		b.currentConsecutiveErrors.Store(0)
+		return resp, nil
+	case errors.Is(err, ErrNotFound):
+		return nil, err
+	}
+
+	if b.currentConsecutiveErrors.Add(1) >= b.maxConsecutiveErrors {
+		b.trip(ctx, err)
+		return &HeadResponse{}, nil
+	}
+
+	return nil, err
+}
+
 func (b *RemoteStorageCircuitBreaker) Put(ctx context.Context, request *PutRequest) (*PutResponse, error) {
 	if b.isOpen() {
 		_, _ = io.Copy(io.Discard, request.Body)

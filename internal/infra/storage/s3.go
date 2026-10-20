@@ -287,6 +287,21 @@ func (s *S3) Get(ctx context.Context, request *cacheprog.GetRequest) (*cacheprog
 	}, nil
 }
 
+func (s *S3) Head(ctx context.Context, request *cacheprog.HeadRequest) (*cacheprog.HeadResponse, error) {
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.key(request.ActionID)),
+	})
+	switch {
+	case errors.Is(err, nil):
+		return &cacheprog.HeadResponse{}, nil
+	case isNotFound(err):
+		return nil, cacheprog.ErrNotFound
+	default:
+		return nil, fmt.Errorf("head object: %w", err)
+	}
+}
+
 func (s *S3) Put(ctx context.Context, request *cacheprog.PutRequest) (*cacheprog.PutResponse, error) {
 	// check if object already exists
 	// head requests are cheaper than put requests
