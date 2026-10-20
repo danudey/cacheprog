@@ -183,3 +183,76 @@ func (m *putRequestMatcher) Matches(x any) bool {
 func (m *putRequestMatcher) String() string {
 	return fmt.Sprintf("putRequest: %v, body: %v", m.putRequest, m.body)
 }
+
+func TestServer_Head(t *testing.T) {
+	// headStorage implements both RemoteStorage and HeadRemoteStorage
+	type headStorage struct {
+		*MockRemoteStorage
+		*MockHeadRemoteStorage
+	}
+
+	doHead := func(t *testing.T, remoteStorage RemoteStorage) int {
+		t.Helper()
+		server := httptest.NewServer(NewServer(remoteStorage))
+		t.Cleanup(server.Close)
+
+		req, err := storage.NewHeadRequest(context.Background(), server.URL, &cacheprog.HeadRequest{
+			ActionID: []byte("test-action"),
+		})
+		require.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		return resp.StatusCode
+	}
+
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "found", status: http.StatusOK},
+		{name: "not found", err: cacheprog.ErrNotFound, status: http.StatusNotFound},
+		{name: "error", err: fmt.Errorf("boom"), status: http.StatusInternalServerError},
+	} {
+		t.Run("head storage, "+tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			s := headStorage{NewMockRemoteStorage(ctrl), NewMockHeadRemoteStorage(ctrl)}
+
+			var resp *cacheprog.HeadResponse
+			if tc.err == nil {
+				resp = &cacheprog.HeadResponse{}
+			}
+			s.MockHeadRemoteStorage.EXPECT().Head(gomock.Any(), &cacheprog.HeadRequest{
+				ActionID: []byte("test-action"),
+			}).Return(resp, tc.err)
+
+			require.Equal(t, tc.status, doHead(t, s))
+		})
+	}
+
+	t.Run("falls back to get", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+
+		remoteStorage.EXPECT().Get(gomock.Any(), &cacheprog.GetRequest{
+			ActionID: []byte("test-action"),
+		}).Return(&cacheprog.GetResponse{
+			Body: io.NopCloser(bytes.NewReader([]byte("test-content"))),
+		}, nil)
+
+		require.Equal(t, http.StatusOK, doHead(t, remoteStorage))
+	})
+
+	t.Run("falls back to get, not found", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+
+		remoteStorage.EXPECT().Get(gomock.Any(), &cacheprog.GetRequest{
+			ActionID: []byte("test-action"),
+		}).Return(nil, cacheprog.ErrNotFound)
+
+		require.Equal(t, http.StatusNotFound, doHead(t, remoteStorage))
+	})
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +27,10 @@ func (stubRemoteStorage) Get(context.Context, *cacheprog.GetRequest) (*cacheprog
 
 func (stubRemoteStorage) Put(context.Context, *cacheprog.PutRequest) (*cacheprog.PutResponse, error) {
 	return &cacheprog.PutResponse{}, nil
+}
+
+func (stubRemoteStorage) Head(context.Context, *cacheprog.HeadRequest) (*cacheprog.HeadResponse, error) {
+	return nil, cacheprog.ErrNotFound
 }
 
 func genEd25519PEM(t *testing.T) (privPEM, pubPEM []byte) {
@@ -138,4 +143,28 @@ func TestSigningKeyProvided(t *testing.T) {
 		args := &RemoteStorageArgs{}
 		assert.False(t, args.signingKeyProvided())
 	})
+}
+
+func TestCacheprogAppArgs_HandlerOptions(t *testing.T) {
+	args := &CacheprogAppArgs{
+		MaxConcurrentRemoteGets: 1,
+		MaxConcurrentRemotePuts: 2,
+		MaxBackgroundWait:       3 * time.Second,
+		MinRemotePutSize:        4,
+		DisableGet:              true,
+		DisablePut:              true,
+		BackfillRemote:          true,
+	}
+
+	opts := args.handlerOptions(stubRemoteStorage{}, nil)
+
+	assert.Equal(t, stubRemoteStorage{}, opts.RemoteStorage)
+	assert.Equal(t, 1, opts.MaxConcurrentRemoteGets)
+	assert.Equal(t, 2, opts.MaxConcurrentRemotePuts)
+	assert.Equal(t, 3*time.Second, opts.CloseTimeout)
+	assert.Equal(t, int64(4), opts.MinRemotePutSize)
+	assert.True(t, opts.DisableGet)
+	assert.True(t, opts.DisablePut)
+	assert.True(t, opts.BackfillRemote)
+	assert.NotNil(t, opts.CompressionCodec)
 }

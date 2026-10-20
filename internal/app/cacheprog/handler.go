@@ -55,6 +55,12 @@ type (
 
 	PutResponse struct{}
 
+	HeadRequest struct {
+		ActionID []byte
+	}
+
+	HeadResponse struct{}
+
 	LocalGetRequest struct {
 		ActionID []byte
 	}
@@ -142,6 +148,9 @@ type (
 
 		// Put pushes object to remote storage.
 		Put(ctx context.Context, request *PutRequest) (*PutResponse, error)
+
+		// Head checks that object exists in remote storage without fetching it. Returns ErrNotFound if object was not found.
+		Head(ctx context.Context, request *HeadRequest) (*HeadResponse, error)
 	}
 )
 
@@ -183,8 +192,9 @@ type Handler struct {
 	bgCancel     context.CancelFunc // cancels bgCtx once close has stopped waiting
 	onClose      func(ctx context.Context) error
 
-	disableGet bool
-	disablePut bool
+	disableGet     bool
+	disablePut     bool
+	backfillRemote bool
 
 	// counters for statistic output
 	getCalls        atomic.Int64
@@ -203,6 +213,7 @@ type HandlerOptions struct {
 	CompressionCodec        CompressionCodec // compression codec to use on remote storage, if not provided - no compression will be used
 	DisableGet              bool             // disable getting objects from any storage, useful to force rebuild of the project and rewrite cache
 	DisablePut              bool             // disable writing to remote storage
+	BackfillRemote          bool             // on local hit, upload object to remote storage if it is missing there
 
 	CloseTimeout time.Duration                   // max time to wait for handler to close, 0 - no timeout
 	OnClose      func(ctx context.Context) error // if provided - expected to be blocking, called on close command
@@ -235,6 +246,7 @@ func NewHandler(opts HandlerOptions) *Handler {
 		bgCancel:         bgCancel,
 		disableGet:       opts.DisableGet,
 		disablePut:       opts.DisablePut,
+		backfillRemote:   opts.BackfillRemote,
 	}
 }
 
@@ -280,6 +292,7 @@ func (h *Handler) handleGet(ctx context.Context, writer cacheproto.ResponseWrite
 			Size:     localObj.Size,
 			DiskPath: localObj.DiskPath,
 		})
+		h.backfillToRemote(req.ActionID, localObj.Size)
 		return
 	case errors.Is(err, ErrNotFound):
 		// if local object was not found - try to get it from remote storage
@@ -409,7 +422,7 @@ func (h *Handler) handlePut(ctx context.Context, writer cacheproto.ResponseWrite
 	// perform remote storage upload in background to avoid response blocking
 	// upload failure is not critical, we already stored object in local storage
 	if h.remoteStorage != nil {
-		h.closeWG.Go(func() { h.putToRemote(req.ActionID) })
+		h.closeWG.Go(func() { h.putToRemote(req.ActionID, false) })
 	}
 
 	h.writeResponse(ctx, writer, &cacheproto.Response{
@@ -418,7 +431,23 @@ func (h *Handler) handlePut(ctx context.Context, writer cacheproto.ResponseWrite
 	})
 }
 
-func (h *Handler) putToRemote(actionID []byte) {
+// backfillToRemote uploads a locally cached object to remote storage in background
+// if it is missing there, e.g. because it was produced before remote storage was configured.
+func (h *Handler) backfillToRemote(actionID []byte, size int64) {
+	if !h.backfillRemote || h.remoteStorage == nil || h.disablePut {
+		return
+	}
+
+	if h.minRemotePutSize > 0 && size < h.minRemotePutSize {
+		return
+	}
+
+	h.closeWG.Go(func() { h.putToRemote(actionID, true) })
+}
+
+// putToRemote uploads local object to remote storage. If onlyIfMissing is set,
+// the upload is skipped unless remote storage reports the object as not found.
+func (h *Handler) putToRemote(actionID []byte, onlyIfMissing bool) {
 	ctx := logging.AttachArgs(h.bgCtx, "action_id", logging.Bytes(actionID))
 
 	ctx, exit := h.enterPutToRemote(ctx)
@@ -427,6 +456,14 @@ func (h *Handler) putToRemote(actionID []byte) {
 	if ctx.Err() != nil {
 		slog.WarnContext(ctx, "Put to remote storage cancelled")
 		return
+	}
+
+	if onlyIfMissing {
+		// on error, skip: the object is already served from local storage, logging is done by observers
+		_, err := h.remoteStorage.Head(ctx, &HeadRequest{ActionID: actionID})
+		if !errors.Is(err, ErrNotFound) {
+			return
+		}
 	}
 
 	localObjStream, err := h.localStorage.GetLocalObject(ctx, &LocalObjectGetRequest{
@@ -593,6 +630,10 @@ func (h *Handler) closeWait() {
 	logTicker := time.NewTicker(5 * time.Second)
 	defer logTicker.Stop()
 
+	// created once: a timer made inside the loop would restart on every log tick
+	timeout := time.NewTimer(h.closeTimeout)
+	defer timeout.Stop()
+
 	allDone := make(chan struct{})
 	go func() {
 		h.closeWG.Wait()
@@ -605,7 +646,7 @@ func (h *Handler) closeWait() {
 			return
 		case <-logTicker.C:
 			slog.Debug("still waiting for background jobs to finish")
-		case <-time.After(h.closeTimeout):
+		case <-timeout.C:
 			slog.Warn("background jobs did not finish in time")
 			return
 		}

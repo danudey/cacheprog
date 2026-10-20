@@ -341,3 +341,49 @@ func TestS3(t *testing.T) {
 		})
 	})
 }
+
+func TestS3_Head(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		headErr  error
+		wantErr  error
+		anyError bool
+	}{
+		{name: "found"},
+		{name: "not found", headErr: &smithy.GenericAPIError{Code: "NotFound"}, wantErr: cacheprog.ErrNotFound},
+		{name: "access denied", headErr: &smithy.GenericAPIError{Code: "AccessDenied"}, anyError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+
+			mockClient := storage.NewMockS3Client(ctrl)
+			s3Storage := storage.NewS3(storage.S3Params{
+				Client: mockClient,
+				Bucket: "test-bucket",
+				Prefix: "test-prefix",
+			})
+
+			actionID := []byte("test-action-id")
+
+			var headResp *s3.HeadObjectOutput
+			if tc.headErr == nil {
+				headResp = &s3.HeadObjectOutput{}
+			}
+			mockClient.EXPECT().HeadObject(gomock.Any(), &s3.HeadObjectInput{
+				Bucket: aws.String("test-bucket"),
+				Key:    aws.String("test-prefix/" + hex.EncodeToString(actionID)),
+			}).Return(headResp, tc.headErr)
+
+			_, err := s3Storage.Head(context.Background(), &cacheprog.HeadRequest{ActionID: actionID})
+			switch {
+			case tc.wantErr != nil:
+				assert.ErrorIs(t, err, tc.wantErr)
+			case tc.anyError:
+				assert.Error(t, err)
+				assert.NotErrorIs(t, err, cacheprog.ErrNotFound)
+			default:
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

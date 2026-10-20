@@ -103,6 +103,12 @@ func (s *RemoteStorage) Get(ctx context.Context, req *cacheprog.GetRequest) (*ca
 	return resp, nil
 }
 
+// Head only reports presence: it does not verify the object, so an unsigned or
+// tampered object still counts as existing.
+func (s *RemoteStorage) Head(ctx context.Context, req *cacheprog.HeadRequest) (*cacheprog.HeadResponse, error) {
+	return s.inner.Head(ctx, req)
+}
+
 type verifiedObject struct {
 	manifest *Manifest
 	payload  []byte

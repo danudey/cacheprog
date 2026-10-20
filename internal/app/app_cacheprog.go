@@ -30,6 +30,7 @@ type CacheprogAppArgs struct {
 	MinRemotePutSize        int64         `arg:"--min-remote-put-size,env:MIN_REMOTE_PUT_SIZE" placeholder:"SIZE" help:"Min size of object to push to remote storage, no size limit if not provided"`
 	DisableGet              bool          `arg:"--disable-get,env:DISABLE_GET" help:"Disable getting objects from any storage, useful to force rebuild of the project and rewrite cache"`
 	DisablePut              bool          `arg:"--disable-put,env:DISABLE_PUT" help:"Disable writing to remote storage"`
+	BackfillRemote          bool          `arg:"--backfill-remote,env:BACKFILL_REMOTE" help:"On a local cache hit, upload the object to remote storage in background if it is missing there"`
 }
 
 type RemoteStorageArgs struct {
@@ -229,6 +230,21 @@ func (r *RemoteStorageArgs) loadVerifyKeys() ([]byte, error) {
 	return nil, nil
 }
 
+func (a *CacheprogAppArgs) handlerOptions(remoteStorage cacheprog.RemoteStorage, localStorage cacheprog.LocalStorage) cacheprog.HandlerOptions {
+	return cacheprog.HandlerOptions{
+		RemoteStorage:           remoteStorage,
+		MaxConcurrentRemoteGets: a.MaxConcurrentRemoteGets,
+		MaxConcurrentRemotePuts: a.MaxConcurrentRemotePuts,
+		MinRemotePutSize:        a.MinRemotePutSize,
+		LocalStorage:            localStorage,
+		CloseTimeout:            a.MaxBackgroundWait,
+		CompressionCodec:        compression.NewCodec(),
+		DisableGet:              a.DisableGet,
+		DisablePut:              a.DisablePut,
+		BackfillRemote:          a.BackfillRemote,
+	}
+}
+
 func (a *CacheprogAppArgs) Run(ctx context.Context) error {
 	defer func() {
 		if err := metrics.PushMetrics(ctx, metrics.PushConfig{
@@ -264,16 +280,7 @@ func (a *CacheprogAppArgs) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to configure disk storage: %w", err)
 	}
 
-	h := cacheprog.NewHandler(cacheprog.HandlerOptions{
-		RemoteStorage:           remoteStorage,
-		MaxConcurrentRemoteGets: a.MaxConcurrentRemoteGets,
-		MaxConcurrentRemotePuts: a.MaxConcurrentRemotePuts,
-		LocalStorage:            cacheprog.ObservingLocalStorage{LocalStorage: diskStorage},
-		CloseTimeout:            a.MaxBackgroundWait,
-		CompressionCodec:        compression.NewCodec(),
-		DisableGet:              a.DisableGet,
-		DisablePut:              a.DisablePut,
-	})
+	h := cacheprog.NewHandler(a.handlerOptions(remoteStorage, cacheprog.ObservingLocalStorage{LocalStorage: diskStorage}))
 	defer func() {
 		statistics := h.GetStatistics()
 		slog.Info("cacheprog statistics",

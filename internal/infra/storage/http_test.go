@@ -145,3 +145,38 @@ func TestHTTP_Put(t *testing.T) {
 		require.NotNil(t, response)
 	})
 }
+
+func TestHTTP_Head(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		wantErr error
+	}{
+		{name: "found", status: http.StatusOK},
+		{name: "not found", status: http.StatusNotFound, wantErr: cacheprog.ErrNotFound},
+		{name: "server error", status: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/cache/01020304", r.URL.Path)
+				assert.Equal(t, http.MethodHead, r.Method)
+				assert.Equal(t, "value", r.Header.Get("X-Extra"))
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			client := storage.NewHTTP(http.DefaultClient, server.URL, http.Header{"X-Extra": []string{"value"}})
+
+			_, err := client.Head(context.Background(), &cacheprog.HeadRequest{ActionID: []byte{1, 2, 3, 4}})
+			switch {
+			case tc.status == http.StatusOK:
+				assert.NoError(t, err)
+			case tc.wantErr != nil:
+				assert.ErrorIs(t, err, tc.wantErr)
+			default:
+				assert.Error(t, err)
+				assert.NotErrorIs(t, err, cacheprog.ErrNotFound)
+			}
+		})
+	}
+}

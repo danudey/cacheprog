@@ -86,6 +86,8 @@ This tool is equipped with circuit-breaker for remote storage to automatically d
 
 To disable it set this variable to zero or negative value.
 
+By default objects are uploaded to remote storage only when the compiler puts them, so objects that were already in the local cache before remote storage was configured never reach it. Set `CACHEPROG_BACKFILL_REMOTE=true` (flag: `--backfill-remote`) to upload them on a local cache hit: cacheprog checks in the background whether the object exists in remote storage (an S3 `HeadObject` or HTTP `HEAD` request) and uploads it if it is missing. This costs one extra request per local hit, so enable it while the remote cache is being filled.
+
 #### Transport security
 
 Remote storage endpoints (S3 endpoint, S3 credentials endpoint and HTTP storage base URL) must use TLS (`https://`, `minio+https://`). Plaintext `http://` / `minio+http://` endpoints are **rejected at startup** because an attacker on the network path could read or tamper with cache objects in transit, and tampered objects poison builds.
