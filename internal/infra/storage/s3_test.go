@@ -341,3 +341,50 @@ func TestS3(t *testing.T) {
 		})
 	})
 }
+
+func TestConfigureS3_ValidateCredentials(t *testing.T) {
+	// isolate from the host's AWS configuration so only the provided credentials count
+	dir := t.TempDir()
+	t.Setenv("AWS_CONFIG_FILE", dir+"/config")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", dir+"/credentials")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "")
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "")
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")
+
+	cfg := func(accessKeyID, accessKeySecret string) storage.S3Config {
+		return storage.S3Config{
+			Bucket:              "bucket",
+			Region:              "us-east-1",
+			AccessKeyID:         accessKeyID,
+			AccessKeySecret:     accessKeySecret,
+			ValidateCredentials: true,
+		}
+	}
+
+	t.Run("static credentials", func(t *testing.T) {
+		_, err := storage.ConfigureS3(cfg("key", "secret"))
+		require.NoError(t, err)
+	})
+
+	t.Run("blank secret", func(t *testing.T) {
+		_, err := storage.ConfigureS3(cfg("key", ""))
+		require.Error(t, err)
+	})
+
+	t.Run("no credentials available", func(t *testing.T) {
+		_, err := storage.ConfigureS3(cfg("", ""))
+		require.Error(t, err)
+	})
+
+	t.Run("not validated by default", func(t *testing.T) {
+		c := cfg("", "")
+		c.ValidateCredentials = false
+		_, err := storage.ConfigureS3(c)
+		require.NoError(t, err)
+	})
+}

@@ -84,7 +84,17 @@ This tool is equipped with circuit-breaker for remote storage to automatically d
 * avoid bloating of stderr or log file with errors in case of remote storage unavailability or misconfiguration
 * do not slowdown compiler in case of timeout errors
 
+Gets and puts are counted separately and degrade in steps:
+* consecutive put errors disable puts only, the remote storage is still used for gets;
+* consecutive get errors disable the remote storage entirely, only local storage is used.
+
 To disable it set this variable to zero or negative value.
+
+#### Ignoring misconfigured remote storage
+
+By default cacheprog fails to start if remote storage cannot be configured, e.g. the S3 bucket or HTTP base URL is missing. In CI some of these parameters may come from dynamic variables that are not always available (e.g. secrets not exposed to fork pull requests). Set `CACHEPROG_IGNORE_REMOTE_MISCONFIGURATION=true` (flag: `--ignore-remote-misconfiguration`) to log a warning and continue with local storage only instead.
+
+With this option S3 credentials are also resolved at startup: if the access key id or secret is missing or blank and no other credentials source (credentials endpoint, AWS default credentials chain) is available, remote storage is ignored too. This means anonymous access to public buckets is not supported with this option.
 
 #### Transport security
 
