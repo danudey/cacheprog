@@ -30,6 +30,8 @@ type CacheprogAppArgs struct {
 	MinRemotePutSize        int64         `arg:"--min-remote-put-size,env:MIN_REMOTE_PUT_SIZE" placeholder:"SIZE" help:"Min size of object to push to remote storage, no size limit if not provided"`
 	DisableGet              bool          `arg:"--disable-get,env:DISABLE_GET" help:"Disable getting objects from any storage, useful to force rebuild of the project and rewrite cache"`
 	DisablePut              bool          `arg:"--disable-put,env:DISABLE_PUT" help:"Disable writing to remote storage"`
+
+	IgnoreRemoteMisconfiguration bool `arg:"--ignore-remote-misconfiguration,env:IGNORE_REMOTE_MISCONFIGURATION" help:"If remote storage cannot be configured (e.g. missing or blank S3 bucket, credentials or HTTP base URL), log a warning and continue with local storage only instead of failing"`
 }
 
 type RemoteStorageArgs struct {
@@ -84,16 +86,18 @@ type MetricsPushArgs struct {
 // configureRemoteStorage builds the remote storage stack. readOnly is true when
 // signing is configured for verification only (no usable signing key); callers
 // should then refuse remote puts, since this node can validate cached objects
-// but must not publish unsigned ones.
-func (r *RemoteStorageArgs) configureRemoteStorage() (storage cacheprog.RemoteStorage, readOnly bool, err error) {
-	base, err := r.configureBaseStorage()
+// but must not publish unsigned ones. validateCredentials makes S3 storage
+// resolve its credentials up front, so missing ones are reported as a
+// configuration error instead of failing every request.
+func (r *RemoteStorageArgs) configureRemoteStorage(validateCredentials bool) (storage cacheprog.RemoteStorage, readOnly bool, err error) {
+	base, err := r.configureBaseStorage(validateCredentials)
 	if err != nil || base == nil {
 		return base, false, err
 	}
 	return r.wrapWithSigning(base)
 }
 
-func (r *RemoteStorageArgs) configureBaseStorage() (cacheprog.RemoteStorage, error) {
+func (r *RemoteStorageArgs) configureBaseStorage(validateCredentials bool) (cacheprog.RemoteStorage, error) {
 	switch r.RemoteStorageType {
 	case "s3":
 		slog.Info("Using S3 remote storage")
@@ -110,6 +114,7 @@ func (r *RemoteStorageArgs) configureBaseStorage() (cacheprog.RemoteStorage, err
 			AccessKeySecret:           r.AccessKeySecret,
 			SessionToken:              r.SessionToken,
 			AllowInsecureHTTP:         r.AllowInsecureHTTPRemotes,
+			ValidateCredentials:       validateCredentials,
 		})
 	case "http":
 		slog.Info("Using HTTP remote storage")
@@ -229,6 +234,21 @@ func (r *RemoteStorageArgs) loadVerifyKeys() ([]byte, error) {
 	return nil, nil
 }
 
+// configureRemoteStorageOrFallback configures remote storage and, if
+// IgnoreRemoteMisconfiguration is set, swallows configuration errors by
+// returning no remote storage, so the app runs with local storage only.
+func (a *CacheprogAppArgs) configureRemoteStorageOrFallback() (cacheprog.RemoteStorage, bool, error) {
+	remoteStorage, readOnly, err := a.configureRemoteStorage(a.IgnoreRemoteMisconfiguration)
+	if err == nil || !a.IgnoreRemoteMisconfiguration {
+		return remoteStorage, readOnly, err
+	}
+
+	// Falling back to local storage only is always safe: nothing is fetched
+	// from or published to an unverified remote.
+	slog.Warn("Remote storage is misconfigured; ignoring it and continuing with local storage only", logging.Error(err))
+	return nil, false, nil
+}
+
 func (a *CacheprogAppArgs) Run(ctx context.Context) error {
 	defer func() {
 		if err := metrics.PushMetrics(ctx, metrics.PushConfig{
@@ -243,7 +263,7 @@ func (a *CacheprogAppArgs) Run(ctx context.Context) error {
 
 	defer metrics.ObserveOverallRunTime()()
 
-	remoteStorage, readOnly, err := a.configureRemoteStorage()
+	remoteStorage, readOnly, err := a.configureRemoteStorageOrFallback()
 	if err != nil {
 		return fmt.Errorf("failed to configure remote storage: %w", err)
 	}

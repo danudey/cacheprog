@@ -356,3 +356,82 @@ func TestRemoteStorageCircuitBreaker_HalfOpen(t *testing.T) {
 		})
 	})
 }
+
+func TestRemoteStorageCircuitBreaker_Degradation(t *testing.T) {
+	t.Run("failing puts keep gets enabled", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+
+		const maxConsecutiveErrors = 3
+		breaker := NewRemoteStorageCircuitBreaker(remoteStorage, maxConsecutiveErrors, 0)
+
+		// Trip puts
+		expectedError := errors.New("test error")
+		remoteStorage.EXPECT().Put(gomock.Any(), gomock.Any()).Return(nil, expectedError).Times(maxConsecutiveErrors)
+		for range maxConsecutiveErrors {
+			breaker.Put(context.Background(), &PutRequest{ActionID: []byte("test")})
+		}
+
+		// Puts are discarded without calling upstream
+		_, err := breaker.Put(context.Background(), &PutRequest{ActionID: []byte("test"), Body: bytes.NewReader(nil)})
+		require.NoError(t, err)
+
+		// Gets still go to upstream
+		remoteStorage.EXPECT().Get(gomock.Any(), gomock.Any()).Return(&GetResponse{}, nil).Times(1)
+		resp, err := breaker.Get(context.Background(), &GetRequest{ActionID: []byte("test")})
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+	})
+
+	t.Run("failing gets disable puts too", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+
+		const maxConsecutiveErrors = 3
+		breaker := NewRemoteStorageCircuitBreaker(remoteStorage, maxConsecutiveErrors, 0)
+
+		// Trip gets
+		expectedError := errors.New("test error")
+		remoteStorage.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, expectedError).Times(maxConsecutiveErrors)
+		for range maxConsecutiveErrors {
+			breaker.Get(context.Background(), &GetRequest{ActionID: []byte("test")})
+		}
+
+		// Puts are discarded without calling upstream
+		_, err := breaker.Put(context.Background(), &PutRequest{ActionID: []byte("test"), Body: bytes.NewReader(nil)})
+		require.NoError(t, err)
+	})
+
+	t.Run("puts resume when gets recover", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			remoteStorage := NewMockRemoteStorage(ctrl)
+
+			const maxConsecutiveErrors = 3
+			retryAfter := 30 * time.Second
+			breaker := NewRemoteStorageCircuitBreaker(remoteStorage, maxConsecutiveErrors, retryAfter)
+
+			// Trip gets
+			expectedError := errors.New("test error")
+			remoteStorage.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, expectedError).Times(maxConsecutiveErrors)
+			for range maxConsecutiveErrors {
+				breaker.Get(context.Background(), &GetRequest{ActionID: []byte("test")})
+			}
+
+			// Puts must not act as a probe for gets, even after retryAfter
+			time.Sleep(retryAfter)
+			_, err := breaker.Put(context.Background(), &PutRequest{ActionID: []byte("test"), Body: bytes.NewReader(nil)})
+			require.NoError(t, err)
+
+			// Get probe succeeds and closes the circuit
+			remoteStorage.EXPECT().Get(gomock.Any(), gomock.Any()).Return(&GetResponse{}, nil).Times(1)
+			_, err = breaker.Get(context.Background(), &GetRequest{ActionID: []byte("test")})
+			require.NoError(t, err)
+
+			// Puts go to upstream again
+			remoteStorage.EXPECT().Put(gomock.Any(), gomock.Any()).Return(&PutResponse{}, nil).Times(1)
+			_, err = breaker.Put(context.Background(), &PutRequest{ActionID: []byte("test")})
+			require.NoError(t, err)
+		})
+	})
+}

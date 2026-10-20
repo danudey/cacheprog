@@ -91,10 +91,19 @@ type S3Config struct {
 	AccessKeyID     string
 	AccessKeySecret string
 	SessionToken    string
+
+	// ValidateCredentials makes configuration fail if credentials cannot be
+	// resolved (e.g. access key id or secret is missing and no other source is
+	// available) instead of failing every request later.
+	ValidateCredentials bool
 }
 
+// credentialsValidationTimeout bounds credentials resolution during configuration,
+// default chain may probe slow sources like EC2 instance metadata.
+const credentialsValidationTimeout = 10 * time.Second
+
 func ConfigureS3(cfg S3Config) (*S3, error) {
-	if cfg.Bucket == "" {
+	if strings.TrimSpace(cfg.Bucket) == "" {
 		return nil, fmt.Errorf("bucket is required")
 	}
 
@@ -157,17 +166,8 @@ func ConfigureS3(cfg S3Config) (*S3, error) {
 		}))
 	}
 
-	var credsProviders []aws.CredentialsProvider
-	if cfg.CredentialsEndpoint != "" {
-		credsProviders = append(credsProviders, endpointcreds.New(cfg.CredentialsEndpoint))
-	}
-	if cfg.AccessKeyID != "" {
-		credsProviders = append(credsProviders, credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.AccessKeySecret, cfg.SessionToken))
-	}
-	if len(credsProviders) > 0 {
-		awsOptions = append(awsOptions, awsConfig.WithCredentialsProvider(
-			aws.NewCredentialsCache(chainCredentialsProviders(credsProviders...)),
-		))
+	if credsProvider := configuredCredentialsProvider(cfg); credsProvider != nil {
+		awsOptions = append(awsOptions, awsConfig.WithCredentialsProvider(credsProvider))
 	}
 
 	// try to figure out region if not provided
@@ -189,6 +189,12 @@ func ConfigureS3(cfg S3Config) (*S3, error) {
 		return nil, fmt.Errorf("failed to load aws config: %w", err)
 	}
 
+	if cfg.ValidateCredentials {
+		if err := validateCredentials(awsCfg.Credentials); err != nil {
+			return nil, err
+		}
+	}
+
 	s3Client := s3.NewFromConfig(awsCfg, s3Options...)
 
 	return NewS3(S3Params{
@@ -197,6 +203,40 @@ func ConfigureS3(cfg S3Config) (*S3, error) {
 		Prefix:   prefix,
 		Lifetime: cfg.Expiration,
 	}), nil
+}
+
+// configuredCredentialsProvider returns the provider for explicitly configured
+// credentials, or nil if none are configured and the default chain should be used.
+func configuredCredentialsProvider(cfg S3Config) aws.CredentialsProvider {
+	var credsProviders []aws.CredentialsProvider
+	if cfg.CredentialsEndpoint != "" {
+		credsProviders = append(credsProviders, endpointcreds.New(cfg.CredentialsEndpoint))
+	}
+	if cfg.AccessKeyID != "" {
+		credsProviders = append(credsProviders, credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.AccessKeySecret, cfg.SessionToken))
+	}
+	if len(credsProviders) == 0 {
+		return nil
+	}
+	return aws.NewCredentialsCache(chainCredentialsProviders(credsProviders...))
+}
+
+func validateCredentials(provider aws.CredentialsProvider) error {
+	if provider == nil {
+		return fmt.Errorf("no credentials provider configured")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), credentialsValidationTimeout)
+	defer cancel()
+
+	creds, err := provider.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve credentials: %w", err)
+	}
+	if strings.TrimSpace(creds.AccessKeyID) == "" || strings.TrimSpace(creds.SecretAccessKey) == "" {
+		return fmt.Errorf("credentials are blank")
+	}
+	return nil
 }
 
 // validateS3Endpoints rejects plaintext endpoints unless insecure transport
