@@ -1,0 +1,59 @@
+env COMPILER_EXPRESSION='(compile|gccgo)( |\.exe).*main\.go'
+
+# prepare environment
+env CACHEPROG_ROOT_DIRECTORY=$WORK/disk-cache
+mkdir -p ${CACHEPROG_ROOT_DIRECTORY}
+[!short] env MC_FULLPATH=${MINIO_ALIAS}/${CACHEPROG_S3_BUCKET}/tests/backfill-remote-test
+# cleanup path for consistency
+[!short] mc rm --recursive --force ${MC_FULLPATH}
+
+# populate local cache only
+env CACHEPROG_REMOTE_STORAGE_TYPE=disabled
+set-cacheprog GOCACHEPROG
+go build -x -o test_bin$exe ./main.go
+stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+rm test_bin$exe
+
+# rebuild from local cache without backfill — remote stays empty
+[!short] env CACHEPROG_REMOTE_STORAGE_TYPE=s3 CACHEPROG_S3_PREFIX=tests/backfill-remote-test
+go build -x -o test_bin$exe ./main.go
+! stderr ${COMPILER_EXPRESSION}
+rm test_bin$exe
+[!short] ! mc du ${MC_FULLPATH}
+
+# rebuild from local cache with backfill — local hits are uploaded to remote
+env CACHEPROG_BACKFILL_REMOTE=true
+go build -x -o test_bin$exe ./main.go
+! stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+rm test_bin$exe
+
+[!short] mc du ${MC_FULLPATH}
+[!short] stdout ${CACHEPROG_S3_BUCKET}/${CACHEPROG_S3_PREFIX}
+[!short] ! stdout '^0B'
+[!short] ! stdout '(^|\W)0 object'
+
+# clear local disk cache, build must be served from backfilled remote cache
+rm ${CACHEPROG_ROOT_DIRECTORY}
+mkdir -p ${CACHEPROG_ROOT_DIRECTORY}
+env CACHEPROG_BACKFILL_REMOTE=false
+go build -x -o test_bin$exe ./main.go
+[!short] ! stderr ${COMPILER_EXPRESSION}
+exec ./test_bin$exe
+cmp stdout expected_output.txt
+rm test_bin$exe
+
+-- main.go --
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello world!")
+}
+
+-- expected_output.txt --
+Hello world!

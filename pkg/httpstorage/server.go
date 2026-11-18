@@ -12,10 +12,12 @@ import (
 //go:generate go tool go.uber.org/mock/mockgen -destination=mocks_world_test.go -package=$GOPACKAGE -source=$GOFILE
 
 type (
-	GetRequest  = cacheprog.GetRequest
-	GetResponse = cacheprog.GetResponse
-	PutRequest  = cacheprog.PutRequest
-	PutResponse = cacheprog.PutResponse
+	GetRequest   = cacheprog.GetRequest
+	GetResponse  = cacheprog.GetResponse
+	PutRequest   = cacheprog.PutRequest
+	PutResponse  = cacheprog.PutResponse
+	HeadRequest  = cacheprog.HeadRequest
+	HeadResponse = cacheprog.HeadResponse
 
 	RemoteStorage interface {
 		// Get fetches object from remote storage. Returns [ErrNotFound] if object was not found.
@@ -23,6 +25,13 @@ type (
 
 		// Put pushes object to remote storage.
 		Put(ctx context.Context, request *PutRequest) (*PutResponse, error)
+	}
+
+	// HeadRemoteStorage may be implemented by RemoteStorage to check object presence cheaply.
+	// If it is not implemented, HEAD requests fall back to Get.
+	HeadRemoteStorage interface {
+		// Head checks that object exists in remote storage. Returns [ErrNotFound] if object was not found.
+		Head(ctx context.Context, request *HeadRequest) (*HeadResponse, error)
 	}
 )
 
@@ -33,6 +42,7 @@ var ErrNotFound = cacheprog.ErrNotFound
 // It has 2 endpoints:
 // - PUT /cache/{actionID} - pushes object to remote storage, returns 200 on success, 400 on bad request, 500 on error
 // - GET /cache/{actionID} - fetches object from remote storage, returns 200 on success, 400 on bad request, 404 on not found object, 500 on error
+// - HEAD /cache/{actionID} - checks object presence in remote storage, returns 200 if found, 400 on bad request, 404 on not found object, 500 on error
 func NewServer(remoteStorage RemoteStorage) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /cache/{actionID}", func(w http.ResponseWriter, r *http.Request) {
@@ -88,5 +98,43 @@ func NewServer(remoteStorage RemoteStorage) http.Handler {
 		}
 	})
 
+	mux.HandleFunc("HEAD /cache/{actionID}", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		headRequest, err := storage.ParseHeadRequest(r)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		if remoteStorage == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		err = headObject(ctx, remoteStorage, headRequest)
+		switch {
+		case errors.Is(err, nil):
+			w.WriteHeader(http.StatusOK)
+		case errors.Is(err, ErrNotFound):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+
 	return mux
+}
+
+func headObject(ctx context.Context, remoteStorage RemoteStorage, request *HeadRequest) error {
+	if headStorage, ok := remoteStorage.(HeadRemoteStorage); ok {
+		_, err := headStorage.Head(ctx, request)
+		return err
+	}
+
+	getResponse, err := remoteStorage.Get(ctx, &GetRequest{ActionID: request.ActionID})
+	if err != nil {
+		return err
+	}
+	return getResponse.Body.Close()
 }

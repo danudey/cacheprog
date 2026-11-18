@@ -101,6 +101,25 @@ func (o ObservingRemoteStorage) Get(ctx context.Context, request *GetRequest) (*
 	}
 }
 
+func (o ObservingRemoteStorage) Head(ctx context.Context, request *HeadRequest) (*HeadResponse, error) {
+	slog.DebugContext(ctx, "Head object in remote storage")
+	defer metrics.ObserveObjectDuration("remote", "head")()
+
+	resp, err := o.RemoteStorage.Head(ctx, request)
+	switch {
+	case errors.Is(err, nil):
+		slog.DebugContext(ctx, "Remote object exists")
+		return resp, nil
+	case errors.Is(err, ErrNotFound):
+		slog.DebugContext(ctx, "Remote object does not exist")
+		return nil, err
+	default:
+		slog.ErrorContext(ctx, "Failed to head object in remote storage", logging.Error(err))
+		metrics.ObserveStorageError("remote", "head")
+		return nil, err
+	}
+}
+
 func (o ObservingRemoteStorage) Put(ctx context.Context, request *PutRequest) (*PutResponse, error) {
 	ctx = logging.AttachArgs(ctx, "output_id", logging.Bytes(request.OutputID), "size", request.Size)
 	slog.DebugContext(ctx, "Put object to remote storage")

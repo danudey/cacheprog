@@ -69,3 +69,42 @@ func (mr *MockRemoteStorageMockRecorder) Put(ctx, request any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Put", reflect.TypeOf((*MockRemoteStorage)(nil).Put), ctx, request)
 }
+
+// MockHeadRemoteStorage is a mock of HeadRemoteStorage interface.
+type MockHeadRemoteStorage struct {
+	ctrl     *gomock.Controller
+	recorder *MockHeadRemoteStorageMockRecorder
+	isgomock struct{}
+}
+
+// MockHeadRemoteStorageMockRecorder is the mock recorder for MockHeadRemoteStorage.
+type MockHeadRemoteStorageMockRecorder struct {
+	mock *MockHeadRemoteStorage
+}
+
+// NewMockHeadRemoteStorage creates a new mock instance.
+func NewMockHeadRemoteStorage(ctrl *gomock.Controller) *MockHeadRemoteStorage {
+	mock := &MockHeadRemoteStorage{ctrl: ctrl}
+	mock.recorder = &MockHeadRemoteStorageMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockHeadRemoteStorage) EXPECT() *MockHeadRemoteStorageMockRecorder {
+	return m.recorder
+}
+
+// Head mocks base method.
+func (m *MockHeadRemoteStorage) Head(ctx context.Context, request *HeadRequest) (*HeadResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Head", ctx, request)
+	ret0, _ := ret[0].(*HeadResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Head indicates an expected call of Head.
+func (mr *MockHeadRemoteStorageMockRecorder) Head(ctx, request any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Head", reflect.TypeOf((*MockHeadRemoteStorage)(nil).Head), ctx, request)
+}

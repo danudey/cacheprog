@@ -59,6 +59,13 @@ func (f *fakeStorage) Get(_ context.Context, req *cacheprog.GetRequest) (*cachep
 	}, nil
 }
 
+func (f *fakeStorage) Head(_ context.Context, req *cacheprog.HeadRequest) (*cacheprog.HeadResponse, error) {
+	if _, ok := f.objects[hex.EncodeToString(req.ActionID)]; !ok {
+		return nil, cacheprog.ErrNotFound
+	}
+	return &cacheprog.HeadResponse{}, nil
+}
+
 func newTestStore(t *testing.T, requireSig bool) (*RemoteStorage, *fakeStorage) {
 	t.Helper()
 	signer, err := NewHMACSigner([]byte("test-secret"), "key-1")
@@ -102,6 +109,19 @@ func TestRemoteStorage_RoundTrip(t *testing.T) {
 	assert.Equal(t, "zstd", resp.CompressionAlgorithm)
 	assert.Equal(t, int64(9999), resp.UncompressedSize)
 	assert.Equal(t, int64(len(payload)), resp.Size)
+}
+
+func TestRemoteStorage_Head(t *testing.T) {
+	s, _ := newTestStore(t, true)
+	actionID := []byte("action-1")
+
+	_, err := s.Head(context.Background(), &cacheprog.HeadRequest{ActionID: actionID})
+	require.ErrorIs(t, err, cacheprog.ErrNotFound)
+
+	putObject(t, s, actionID, []byte("the-compressed-payload-bytes"))
+
+	_, err = s.Head(context.Background(), &cacheprog.HeadRequest{ActionID: actionID})
+	require.NoError(t, err)
 }
 
 func TestRemoteStorage_TamperedPayload_IsMiss(t *testing.T) {
@@ -221,5 +241,9 @@ func (errStorage) Put(context.Context, *cacheprog.PutRequest) (*cacheprog.PutRes
 }
 
 func (errStorage) Get(context.Context, *cacheprog.GetRequest) (*cacheprog.GetResponse, error) {
+	return nil, errors.New("boom")
+}
+
+func (errStorage) Head(context.Context, *cacheprog.HeadRequest) (*cacheprog.HeadResponse, error) {
 	return nil, errors.New("boom")
 }

@@ -106,6 +106,34 @@ func (b *RemoteStorageCircuitBreaker) Get(ctx context.Context, request *GetReque
 	return nil, err
 }
 
+func (b *RemoteStorageCircuitBreaker) Head(ctx context.Context, request *HeadRequest) (*HeadResponse, error) {
+	// Head only serves backfill uploads, so it shares the put breaker: failing
+	// heads stop backfilling without disabling gets. A tripped get breaker
+	// disables the remote entirely, as for puts.
+	if b.get.tripped() || b.put.isOpen() {
+		// report as "found" so callers skip the upload that would be discarded anyway
+		return &HeadResponse{}, nil
+	}
+
+	resp, err := b.upstream.Head(ctx, request)
+	switch {
+	case errors.Is(err, nil):
+		b.put.success()
+		return resp, nil
+	case errors.Is(err, ErrNotFound):
+		return nil, err
+	}
+
+	if b.put.failure() {
+		// this may be logged multiple times because of concurrent requests but it's not a problem
+		slog.ErrorContext(ctx, "Remote storage puts have been disabled because of too many consecutive errors, continuing with gets only",
+			"operation", "head", logging.Error(err))
+		return &HeadResponse{}, nil
+	}
+
+	return nil, err
+}
+
 func (b *RemoteStorageCircuitBreaker) Put(ctx context.Context, request *PutRequest) (*PutResponse, error) {
 	// Failing gets disable the remote entirely. Check it without probing:
 	// recovery of gets is driven by get requests only.

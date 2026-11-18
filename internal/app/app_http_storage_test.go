@@ -109,7 +109,7 @@ func TestConfigureBaseStorage_HTTPMaxIdleConns(t *testing.T) {
 	parsed := parseArgs(t, "direct")
 	require.NotNil(t, parsed.CacheprogApp)
 
-	remote, err := parsed.CacheprogApp.configureBaseStorage()
+	remote, err := parsed.CacheprogApp.configureBaseStorage(false)
 	require.NoError(t, err)
 	require.IsType(t, &storage.HTTP{}, remote)
 
@@ -156,7 +156,7 @@ func TestConfigureBaseStorage_HTTPH2C(t *testing.T) {
 			parsed := parseArgs(t, "direct")
 			require.NotNil(t, parsed.CacheprogApp)
 
-			remote, err := parsed.CacheprogApp.configureBaseStorage()
+			remote, err := parsed.CacheprogApp.configureBaseStorage(false)
 			require.NoError(t, err)
 			require.IsType(t, &storage.HTTP{}, remote)
 

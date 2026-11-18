@@ -107,6 +107,74 @@ func TestRemoteStorageCircuitBreaker_Get(t *testing.T) {
 	})
 }
 
+func TestRemoteStorageCircuitBreaker_Head(t *testing.T) {
+	t.Run("reports found once disabled", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+		expectedError := errors.New("test error")
+
+		const maxConsecutiveErrors = 10
+		remoteStorage.EXPECT().Head(gomock.Any(), gomock.Any()).Return(nil, expectedError).Times(maxConsecutiveErrors)
+
+		breaker := NewRemoteStorageCircuitBreaker(remoteStorage, maxConsecutiveErrors, 0)
+		for range maxConsecutiveErrors - 1 {
+			_, err := breaker.Head(context.Background(), &HeadRequest{ActionID: []byte("test")})
+			require.ErrorIs(t, err, expectedError)
+		}
+
+		// trips the breaker
+		_, err := breaker.Head(context.Background(), &HeadRequest{ActionID: []byte("test")})
+		require.NoError(t, err)
+
+		// upstream is not called anymore
+		_, err = breaker.Head(context.Background(), &HeadRequest{ActionID: []byte("test")})
+		require.NoError(t, err)
+	})
+
+	t.Run("failing heads do not disable gets", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+		remoteStorage.EXPECT().Head(gomock.Any(), gomock.Any()).Return(nil, errors.New("test error")).Times(2)
+		remoteStorage.EXPECT().Get(gomock.Any(), gomock.Any()).Return(&GetResponse{}, nil).Times(1)
+
+		breaker := NewRemoteStorageCircuitBreaker(remoteStorage, 2, 0)
+		for range 2 {
+			_, _ = breaker.Head(context.Background(), &HeadRequest{ActionID: []byte("test")})
+		}
+
+		_, err := breaker.Get(context.Background(), &GetRequest{ActionID: []byte("test")})
+		require.NoError(t, err)
+	})
+
+	t.Run("failing gets disable heads", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+		remoteStorage.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, errors.New("test error")).Times(2)
+
+		breaker := NewRemoteStorageCircuitBreaker(remoteStorage, 2, 0)
+		for range 2 {
+			_, _ = breaker.Get(context.Background(), &GetRequest{ActionID: []byte("test")})
+		}
+
+		// upstream Head is not called: reported as found so no upload happens
+		resp, err := breaker.Head(context.Background(), &HeadRequest{ActionID: []byte("test")})
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+	})
+
+	t.Run("not found does not count as error", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		remoteStorage := NewMockRemoteStorage(ctrl)
+		remoteStorage.EXPECT().Head(gomock.Any(), gomock.Any()).Return(nil, ErrNotFound).Times(3)
+
+		breaker := NewRemoteStorageCircuitBreaker(remoteStorage, 2, 0)
+		for range 3 {
+			_, err := breaker.Head(context.Background(), &HeadRequest{ActionID: []byte("test")})
+			require.ErrorIs(t, err, ErrNotFound)
+		}
+	})
+}
+
 func TestRemoteStorageCircuitBreaker_Put(t *testing.T) {
 	t.Run("disabled after errors threshold is reached", func(t *testing.T) {
 		ctrl := gomock.NewController(t)

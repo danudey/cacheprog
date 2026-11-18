@@ -90,6 +90,7 @@ Gets and puts are counted separately and degrade in steps:
 
 To disable it set this variable to zero or negative value.
 
+By default objects are uploaded to remote storage only when the compiler puts them, so objects that were already in the local cache before remote storage was configured never reach it. Set `CACHEPROG_BACKFILL_REMOTE=true` (flag: `--backfill-remote`) to upload them on a local cache hit: cacheprog checks in the background whether the object exists in remote storage (an S3 `HeadObject` or HTTP `HEAD` request) and uploads it if it is missing. This costs one extra request per local hit, so enable it while the remote cache is being filled.
 #### Ignoring misconfigured remote storage
 
 By default cacheprog fails to start if remote storage cannot be configured, e.g. the S3 bucket or HTTP base URL is missing. In CI some of these parameters may come from dynamic variables that are not always available (e.g. secrets not exposed to fork pull requests). Set `CACHEPROG_IGNORE_REMOTE_MISCONFIGURATION=true` (flag: `--ignore-remote-misconfiguration`) to log a warning and continue with local storage only instead.

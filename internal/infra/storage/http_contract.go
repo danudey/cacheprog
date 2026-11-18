@@ -124,6 +124,36 @@ func NewGetRequest(ctx context.Context, baseURL string, getRequest *cacheprog.Ge
 	return req, nil
 }
 
+func ParseHeadRequest(r *http.Request) (*cacheprog.HeadRequest, error) {
+	getRequest, err := ParseGetRequest(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cacheprog.HeadRequest{ActionID: getRequest.ActionID}, nil
+}
+
+func NewHeadRequest(ctx context.Context, baseURL string, headRequest *cacheprog.HeadRequest) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, addPathToURL(baseURL, CachePath, hex.EncodeToString(headRequest.ActionID)), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	return req, nil
+}
+
+func ParseHeadResponse(r *http.Response) (*cacheprog.HeadResponse, error) {
+	switch r.StatusCode {
+	case http.StatusOK:
+		return &cacheprog.HeadResponse{}, nil
+	case http.StatusNotFound:
+		return nil, cacheprog.ErrNotFound
+	default:
+		// HEAD responses have no body to report
+		return nil, fmt.Errorf("unexpected status code: %d", r.StatusCode)
+	}
+}
+
 func WriteGetResponse(w http.ResponseWriter, getResponse *cacheprog.GetResponse) error {
 	defer getResponse.Body.Close()
 	w.Header().Set("Content-Length", strconv.FormatInt(getResponse.Size, 10))

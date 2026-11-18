@@ -55,6 +55,21 @@ func (mr *MockRemoteStorageMockRecorder) Get(ctx, request any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockRemoteStorage)(nil).Get), ctx, request)
 }
 
+// Head mocks base method.
+func (m *MockRemoteStorage) Head(ctx context.Context, request *HeadRequest) (*HeadResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Head", ctx, request)
+	ret0, _ := ret[0].(*HeadResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Head indicates an expected call of Head.
+func (mr *MockRemoteStorageMockRecorder) Head(ctx, request any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Head", reflect.TypeOf((*MockRemoteStorage)(nil).Head), ctx, request)
+}
+
 // Put mocks base method.
 func (m *MockRemoteStorage) Put(ctx context.Context, request *PutRequest) (*PutResponse, error) {
 	m.ctrl.T.Helper()

@@ -212,6 +212,143 @@ func TestHandler_Handle_Get(t *testing.T) {
 	})
 }
 
+func TestHandler_Handle_Get_BackfillRemote(t *testing.T) {
+	ctx := context.Background()
+	actionID := []byte("test-action")
+	outputID := []byte("test-output")
+	payload := []byte("data")
+
+	type mocks struct {
+		local  *MockLocalStorage
+		remote *MockRemoteStorage
+		codec  *MockCompressionCodec
+	}
+
+	// localHit sets up a handler with the given options and a local hit for actionID,
+	// runs a get through it and waits for background jobs
+	localHit := func(t *testing.T, opts HandlerOptions, expect func(m mocks)) {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		m := mocks{
+			local:  NewMockLocalStorage(ctrl),
+			remote: NewMockRemoteStorage(ctrl),
+			codec:  NewMockCompressionCodec(ctrl),
+		}
+
+		opts.RemoteStorage = m.remote
+		opts.LocalStorage = m.local
+		opts.CompressionCodec = m.codec
+		opts.CloseTimeout = time.Second
+		h := NewHandler(opts)
+
+		m.local.EXPECT().
+			GetLocal(gomock.Any(), &LocalGetRequest{ActionID: actionID}).
+			Return(&LocalGetResponse{
+				OutputID: outputID,
+				ModTime:  time.Now(),
+				Size:     int64(len(payload)),
+				DiskPath: "/tmp/cache/123",
+			}, nil)
+		expect(m)
+
+		writer := &mockResponseWriter{}
+		h.Handle(ctx, writer, &cacheproto.Request{
+			ID:       1,
+			Command:  cacheproto.CmdGet,
+			ActionID: actionID,
+		})
+
+		require.Len(t, writer.responses, 1)
+		assert.Equal(t, "/tmp/cache/123", writer.responses[0].DiskPath)
+
+		synctest.Wait()
+	}
+
+	backfill := HandlerOptions{BackfillRemote: true}
+
+	t.Run("missing in remote is uploaded", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			localHit(t, backfill, func(m mocks) {
+				localBody := &mockReadSeekCloser{bytes.NewReader(payload)}
+				compressedPayload := []byte("compressed-data")
+				compressedBody := &mockReadSeekCloser{bytes.NewReader(compressedPayload)}
+				md5sum := md5.Sum(compressedPayload)
+				sha256sum := sha256.Sum256(compressedPayload)
+
+				m.remote.EXPECT().
+					Head(gomock.Any(), &HeadRequest{ActionID: actionID}).
+					Return(nil, ErrNotFound)
+				m.local.EXPECT().
+					GetLocalObject(gomock.Any(), &LocalObjectGetRequest{ActionID: actionID}).
+					Return(&LocalObjectGetResponse{
+						ActionID: actionID,
+						OutputID: outputID,
+						Size:     int64(len(payload)),
+						Body:     localBody,
+					}, nil)
+				m.codec.EXPECT().
+					Compress(&CompressRequest{Body: localBody, Size: int64(len(payload))}).
+					Return(&CompressResponse{
+						Size:      int64(len(compressedPayload)),
+						Body:      compressedBody,
+						Algorithm: "zstd",
+					}, nil)
+				m.remote.EXPECT().
+					Put(gomock.Any(), &PutRequest{
+						ActionID:             actionID,
+						OutputID:             outputID,
+						Size:                 int64(len(compressedPayload)),
+						Body:                 compressedBody,
+						MD5Sum:               md5sum[:],
+						Sha256Sum:            sha256sum[:],
+						CompressionAlgorithm: "zstd",
+						UncompressedSize:     int64(len(payload)),
+					}).
+					Return(&PutResponse{}, nil)
+			})
+		})
+	})
+
+	t.Run("present in remote is not uploaded", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			localHit(t, backfill, func(m mocks) {
+				m.remote.EXPECT().
+					Head(gomock.Any(), &HeadRequest{ActionID: actionID}).
+					Return(&HeadResponse{}, nil)
+			})
+		})
+	})
+
+	t.Run("head error skips upload", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			localHit(t, backfill, func(m mocks) {
+				m.remote.EXPECT().
+					Head(gomock.Any(), &HeadRequest{ActionID: actionID}).
+					Return(nil, errors.New("head failed"))
+			})
+		})
+	})
+
+	t.Run("disabled by default", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			localHit(t, HandlerOptions{}, func(mocks) {})
+		})
+	})
+
+	t.Run("disable put", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			localHit(t, HandlerOptions{BackfillRemote: true, DisablePut: true}, func(mocks) {})
+		})
+	})
+
+	t.Run("object below min remote put size", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			opts := HandlerOptions{BackfillRemote: true, MinRemotePutSize: int64(len(payload)) + 1}
+			localHit(t, opts, func(mocks) {})
+		})
+	})
+}
+
 func TestHandler_Handle_Put(t *testing.T) {
 	ctx := context.Background()
 	actionID := []byte("test-action")
@@ -545,6 +682,45 @@ func TestHandler_OnClose(t *testing.T) {
 			resp := writer.responses[0]
 			assert.Equal(t, int64(1), resp.ID)
 			assert.Empty(t, resp.Err)
+		})
+	})
+
+	t.Run("close timeout longer than log interval", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			// longer than the 5s "still waiting" log ticker in closeWait
+			closeTimeout := 10 * time.Second
+			onCloseDelay := time.Minute
+
+			// ignores ctx, so only closeWait's own timeout can unblock close
+			release := make(chan struct{})
+			onClose := func(_ context.Context) error {
+				select {
+				case <-time.After(onCloseDelay):
+				case <-release:
+				}
+				return nil
+			}
+
+			h := NewHandler(HandlerOptions{
+				CloseTimeout: closeTimeout,
+				OnClose:      onClose,
+			})
+
+			writer := &mockResponseWriter{}
+			startTime := time.Now()
+
+			h.Handle(context.Background(), writer, &cacheproto.Request{
+				ID:      1,
+				Command: cacheproto.CmdClose,
+			})
+
+			elapsed := time.Since(startTime)
+			assert.GreaterOrEqual(t, elapsed, closeTimeout)
+			assert.Less(t, elapsed, onCloseDelay)
+			require.Len(t, writer.responses, 1)
+
+			close(release)
+			synctest.Wait()
 		})
 	})
 
