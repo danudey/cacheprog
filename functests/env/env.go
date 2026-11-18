@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/go-connections/nat"
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -160,6 +161,26 @@ func (e *Env) GetTestScriptParams(t testing.TB) testscript.Params {
 				ts.Check(err)
 				ts.Setenv(args[0], strconv.Itoa(listener.Addr().(*net.TCPAddr).Port))
 				ts.Check(listener.Close())
+			},
+			// 1st arg is a host:port address; waits until it accepts TCP connections
+			"wait-for-port": func(ts *testscript.TestScript, _ bool, args []string) {
+				if len(args) != 1 {
+					ts.Fatalf("wait-for-port expects 1 argument, got %d", len(args))
+				}
+
+				dialer := net.Dialer{Timeout: time.Second}
+				deadline := time.Now().Add(30 * time.Second)
+				for {
+					conn, err := dialer.DialContext(context.Background(), "tcp", args[0])
+					if err == nil {
+						ts.Check(conn.Close())
+						return
+					}
+					if time.Now().After(deadline) {
+						ts.Fatalf("%s did not accept connections: %v", args[0], err)
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
 			},
 			"recording-server":  e.recordingServerCmd,
 			"install-go-binary": e.installGoBinaryCmd,

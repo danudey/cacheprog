@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/hex"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,4 +147,104 @@ func TestHTTP_Put(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, response)
 	})
+}
+
+// newHTTPTestServer starts a server that answers every GET with a small object
+// and counts the connections clients open to it.
+func newHTTPTestServer(t *testing.T, h2c bool) (*httptest.Server, *atomic.Int64, *atomic.Int64) {
+	t.Helper()
+
+	var newConns, http2Requests atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 {
+			http2Requests.Add(1)
+		}
+		w.Header().Set(storage.OutputIDHeader, hex.EncodeToString([]byte("out")))
+		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
+		w.Header().Set(storage.UncompressedSizeHeader, "5")
+		w.Header().Set("Content-Length", "5")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello"))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	if h2c {
+		protocols := new(http.Protocols)
+		protocols.SetHTTP1(true)
+		protocols.SetUnencryptedHTTP2(true)
+		server.Config.Protocols = protocols
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	return server, &newConns, &http2Requests
+}
+
+// runConcurrentGets fetches an object rounds times with parallel concurrent
+// requests per round, fully consuming every body so connections can be reused.
+func runConcurrentGets(t *testing.T, client *storage.HTTP, rounds, parallel int) {
+	t.Helper()
+
+	for range rounds {
+		var wg sync.WaitGroup
+		for range parallel {
+			wg.Go(func() {
+				resp, err := client.Get(t.Context(), &cacheprog.GetRequest{ActionID: []byte{1, 2, 3, 4}})
+				if !assert.NoError(t, err) {
+					return
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			})
+		}
+		wg.Wait()
+	}
+}
+
+func TestConfigureHTTP_ReusesConnections(t *testing.T) {
+	const rounds, parallel = 4, 16
+
+	server, newConns, http2Requests := newHTTPTestServer(t, false)
+
+	client, err := storage.ConfigureHTTP(storage.HTTPConfig{BaseURL: server.URL, AllowInsecure: true})
+	require.NoError(t, err)
+
+	runConcurrentGets(t, client, rounds, parallel)
+
+	// net/http's default of 2 idle connections per host would open ~parallel-2
+	// new connections every round after the first (about 58 here). Allow some
+	// slack: net/http returns a connection to the idle pool asynchronously,
+	// after the body has been read, so a few may still be busy next round.
+	assert.LessOrEqual(t, newConns.Load(), int64(parallel+parallel/2))
+	assert.Zero(t, http2Requests.Load(), "HTTP/1.1 expected without h2c")
+}
+
+func TestConfigureHTTP_H2C(t *testing.T) {
+	const rounds, parallel = 4, 16
+
+	server, newConns, http2Requests := newHTTPTestServer(t, true)
+
+	client, err := storage.ConfigureHTTP(storage.HTTPConfig{BaseURL: server.URL, AllowInsecure: true, H2C: true})
+	require.NoError(t, err)
+
+	// A cold burst may dial several connections before the first one is up,
+	// so establish one first, then check that it carries everything.
+	runConcurrentGets(t, client, 1, 1)
+	runConcurrentGets(t, client, rounds, parallel)
+
+	assert.Equal(t, int64(rounds*parallel+1), http2Requests.Load(), "every request should use HTTP/2")
+	assert.Equal(t, int64(1), newConns.Load(), "HTTP/2 should multiplex over one connection")
+}
+
+func TestConfigureHTTP_H2CRequiresServerSupport(t *testing.T) {
+	server, _, _ := newHTTPTestServer(t, false)
+
+	client, err := storage.ConfigureHTTP(storage.HTTPConfig{BaseURL: server.URL, AllowInsecure: true, H2C: true})
+	require.NoError(t, err)
+
+	_, err = client.Get(t.Context(), &cacheprog.GetRequest{ActionID: []byte{1, 2, 3, 4}})
+	assert.Error(t, err, "an HTTP/1-only server cannot answer prior-knowledge h2c")
 }

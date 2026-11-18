@@ -155,6 +155,8 @@ To simplify setup we provide an adapter that wraps Go interface implementation i
 Environment variables for HTTP storage are:
 * `CACHEPROG_HTTP_STORAGE_BASE_URL` - Base URL, required. Must be `https://` unless `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true` is set (see [Transport security](#transport-security)). Note that `cacheprog proxy` is reached over plaintext `http://`, so the proxy-mode setup below requires this override.
 * `CACHEPROG_HTTP_STORAGE_EXTRA_HEADERS` - Extra headers to be added to each request. Comma-separated list of `key:value` pairs.
+* `CACHEPROG_HTTP_STORAGE_MAX_IDLE_CONNS` - Max idle keep-alive connections kept to the storage. Default: `64`. The Go compiler sends many requests in parallel; too low a value makes most of them open a new connection.
+* `CACHEPROG_HTTP_STORAGE_H2C` - Use HTTP/2 without TLS (h2c) for `http://` base URLs, so all requests share one connection. The server must support h2c; `cacheprog proxy` does. Ignored for `https://`, where HTTP/2 is negotiated through TLS. All parallel requests share one TCP connection, so a lost packet delays all of them; on lossy links HTTP/1.1 with several connections can be faster. Default: `false`.
 
 ### Metrics pushing configuration
 
