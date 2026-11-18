@@ -84,9 +84,18 @@ This tool is equipped with circuit-breaker for remote storage to automatically d
 * avoid bloating of stderr or log file with errors in case of remote storage unavailability or misconfiguration
 * do not slowdown compiler in case of timeout errors
 
+Gets and puts are counted separately and degrade in steps:
+* consecutive put errors disable puts only, the remote storage is still used for gets;
+* consecutive get errors disable the remote storage entirely, only local storage is used.
+
 To disable it set this variable to zero or negative value.
 
 By default objects are uploaded to remote storage only when the compiler puts them, so objects that were already in the local cache before remote storage was configured never reach it. Set `CACHEPROG_BACKFILL_REMOTE=true` (flag: `--backfill-remote`) to upload them on a local cache hit: cacheprog checks in the background whether the object exists in remote storage (an S3 `HeadObject` or HTTP `HEAD` request) and uploads it if it is missing. This costs one extra request per local hit, so enable it while the remote cache is being filled.
+#### Ignoring misconfigured remote storage
+
+By default cacheprog fails to start if remote storage cannot be configured, e.g. the S3 bucket or HTTP base URL is missing. In CI some of these parameters may come from dynamic variables that are not always available (e.g. secrets not exposed to fork pull requests). Set `CACHEPROG_IGNORE_REMOTE_MISCONFIGURATION=true` (flag: `--ignore-remote-misconfiguration`) to log a warning and continue with local storage only instead.
+
+With this option S3 credentials are also resolved at startup: if the access key id or secret is missing or blank and no other credentials source (credentials endpoint, AWS default credentials chain) is available, remote storage is ignored too. This means anonymous access to public buckets is not supported with this option.
 
 #### Transport security
 
@@ -157,6 +166,8 @@ To simplify setup we provide an adapter that wraps Go interface implementation i
 Environment variables for HTTP storage are:
 * `CACHEPROG_HTTP_STORAGE_BASE_URL` - Base URL, required. Must be `https://` unless `CACHEPROG_ALLOW_INSECURE_HTTP_REMOTES=true` is set (see [Transport security](#transport-security)). Note that `cacheprog proxy` is reached over plaintext `http://`, so the proxy-mode setup below requires this override.
 * `CACHEPROG_HTTP_STORAGE_EXTRA_HEADERS` - Extra headers to be added to each request. Comma-separated list of `key:value` pairs.
+* `CACHEPROG_HTTP_STORAGE_MAX_IDLE_CONNS` - Max idle keep-alive connections kept to the storage. Default: `64`. The Go compiler sends many requests in parallel; too low a value makes most of them open a new connection.
+* `CACHEPROG_HTTP_STORAGE_H2C` - Use HTTP/2 without TLS (h2c) for `http://` base URLs, so all requests share one connection. The server must support h2c; `cacheprog proxy` does. Ignored for `https://`, where HTTP/2 is negotiated through TLS. All parallel requests share one TCP connection, so a lost packet delays all of them; on lossy links HTTP/1.1 with several connections can be faster. Default: `false`.
 
 ### Metrics pushing configuration
 

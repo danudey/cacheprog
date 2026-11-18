@@ -11,7 +11,8 @@ services:
     networks:
       - minio_network
   minio:
-    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    # Silo (github.com/pgsty/silo) is a MinIO fork; the official minio/minio images are no longer published.
+    image: ${MINIO_IMAGE:-pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46}
     restart: always
     ports:
       - "9001:9001"
@@ -27,7 +28,7 @@ services:
     networks:
       - minio_network
   mc:
-    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    image: ${MINIO_IMAGE:-pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46}
     container_name: minio-client
     depends_on:
       minio:

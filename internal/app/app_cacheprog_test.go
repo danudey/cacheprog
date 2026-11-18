@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -167,4 +168,49 @@ func TestCacheprogAppArgs_HandlerOptions(t *testing.T) {
 	assert.True(t, opts.DisablePut)
 	assert.True(t, opts.BackfillRemote)
 	assert.NotNil(t, opts.CompressionCodec)
+}
+
+func TestConfigureRemoteStorageOrFallback(t *testing.T) {
+	misconfigured := func() *CacheprogAppArgs {
+		args := &CacheprogAppArgs{}
+		args.RemoteStorageType = "s3"
+		args.Bucket = " " // blank, e.g. an unset CI variable
+		return args
+	}
+
+	t.Run("misconfiguration fails by default", func(t *testing.T) {
+		_, _, err := misconfigured().configureRemoteStorageOrFallback()
+		require.Error(t, err)
+	})
+
+	t.Run("misconfiguration falls back to local storage only", func(t *testing.T) {
+		args := misconfigured()
+		args.IgnoreRemoteMisconfiguration = true
+
+		storage, readOnly, err := args.configureRemoteStorageOrFallback()
+		require.NoError(t, err)
+		assert.Nil(t, storage)
+		assert.False(t, readOnly)
+	})
+
+	t.Run("blank HTTP base URL falls back to local storage only", func(t *testing.T) {
+		args := &CacheprogAppArgs{}
+		args.RemoteStorageType = "http"
+		args.IgnoreRemoteMisconfiguration = true
+
+		storage, _, err := args.configureRemoteStorageOrFallback()
+		require.NoError(t, err)
+		assert.Nil(t, storage)
+	})
+
+	t.Run("valid configuration is kept", func(t *testing.T) {
+		args := &CacheprogAppArgs{}
+		args.RemoteStorageType = "http"
+		args.BaseURL = &url.URL{Scheme: "https", Host: "example.com"}
+		args.IgnoreRemoteMisconfiguration = true
+
+		storage, _, err := args.configureRemoteStorageOrFallback()
+		require.NoError(t, err)
+		assert.NotNil(t, storage)
+	})
 }

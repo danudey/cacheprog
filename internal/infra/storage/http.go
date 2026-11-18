@@ -25,18 +25,82 @@ func NewHTTP(client *http.Client, endpoint string, extraHeaders http.Header) *HT
 	}
 }
 
-func ConfigureHTTP(baseURL string, extraHeaders http.Header, allowInsecure bool) (*HTTP, error) {
-	if baseURL == "" {
+// DefaultHTTPMaxIdleConnsPerHost is the default number of idle keep-alive
+// connections kept per host. The Go compiler issues many cache requests in
+// parallel; net/http's default of 2 makes most of them open a fresh connection.
+const DefaultHTTPMaxIdleConnsPerHost = 64
+
+// HTTP2MaxReceiveBufferPerConnection and HTTP2MaxReceiveBufferPerStream size
+// the HTTP/2 flow-control windows used with h2c. h2c sends all parallel
+// requests over one connection, so net/http's defaults (about 1MB per
+// connection) would cap throughput at about 1MB per round trip on links with
+// real latency.
+const (
+	HTTP2MaxReceiveBufferPerConnection = 64 << 20
+	HTTP2MaxReceiveBufferPerStream     = 16 << 20
+)
+
+type HTTPConfig struct {
+	BaseURL      string
+	ExtraHeaders http.Header
+
+	// AllowInsecure permits plaintext http:// base URLs.
+	AllowInsecure bool
+
+	// MaxIdleConnsPerHost is the number of idle keep-alive connections kept
+	// per host, DefaultHTTPMaxIdleConnsPerHost if zero or negative.
+	MaxIdleConnsPerHost int
+
+	// H2C makes requests to http:// base URLs use HTTP/2 without TLS (prior
+	// knowledge), multiplexing all requests over one connection. The server
+	// must support it. Redirects to https:// URLs still work. Ignored for https:// base URLs, which negotiate HTTP/2
+	// via TLS anyway.
+	H2C bool
+}
+
+func ConfigureHTTP(cfg HTTPConfig) (*HTTP, error) {
+	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("base URL is required")
 	}
 
-	if err := checkRemoteURLScheme("HTTP storage base URL", baseURL, allowInsecure); err != nil {
+	u, err := checkRemoteURLScheme("HTTP storage base URL", cfg.BaseURL, cfg.AllowInsecure)
+	if err != nil {
 		return nil, err
 	}
+	h2c := cfg.H2C && u.Scheme == schemeHTTP // url.Parse lower-cases the scheme
+	if cfg.H2C && !h2c {
+		slog.Warn("HTTP/2 without TLS (h2c) applies only to http:// base URLs, ignoring", slog.String("scheme", u.Scheme))
+	}
 
-	slog.Info("Configuring HTTP storage with base URL", slog.String("baseURL", baseURL))
+	slog.Info("Configuring HTTP storage with base URL", slog.String("baseURL", cfg.BaseURL), slog.Bool("h2c", h2c))
 
-	return NewHTTP(http.DefaultClient, baseURL, extraHeaders), nil
+	return NewHTTP(&http.Client{Transport: newHTTPTransport(cfg.MaxIdleConnsPerHost, h2c)}, cfg.BaseURL, cfg.ExtraHeaders), nil
+}
+
+func newHTTPTransport(maxIdleConnsPerHost int, h2c bool) *http.Transport {
+	if maxIdleConnsPerHost <= 0 {
+		maxIdleConnsPerHost = DefaultHTTPMaxIdleConnsPerHost
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	transport.MaxIdleConns = max(transport.MaxIdleConns, maxIdleConnsPerHost)
+
+	if h2c {
+		// Without HTTP1 in the set, http:// requests use HTTP/2 with prior
+		// knowledge. HTTP2 keeps https:// usable, e.g. for a redirect to a
+		// presigned URL.
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		protocols.SetHTTP2(true)
+		transport.Protocols = protocols
+		transport.HTTP2 = &http.HTTP2Config{
+			MaxReceiveBufferPerConnection: HTTP2MaxReceiveBufferPerConnection,
+			MaxReceiveBufferPerStream:     HTTP2MaxReceiveBufferPerStream,
+		}
+	}
+
+	return transport
 }
 
 func (h *HTTP) Get(ctx context.Context, request *cacheprog.GetRequest) (*cacheprog.GetResponse, error) {
@@ -51,7 +115,7 @@ func (h *HTTP) Get(ctx context.Context, request *cacheprog.GetRequest) (*cachepr
 		}
 	}
 
-	resp, err := h.client.Do(req) //nolint:bodyclose // closed in upper layer
+	resp, err := h.client.Do(req) //nolint:bodyclose // owned by the returned response, closed by ParseGetResponse on error
 	if err != nil {
 		return nil, err
 	}
