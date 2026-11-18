@@ -84,7 +84,7 @@ func newProxyServer(addr string, handler http.Handler) *http.Server {
 func (a *ProxyAppArgs) Run(ctx context.Context) error {
 	// The proxy has no put-disabling switch of its own; in verify-only mode the
 	// signing layer already refuses to publish objects it cannot sign.
-	remoteStorage, _, err := a.configureRemoteStorage()
+	remoteStorage, _, err := a.configureRemoteStorage(false)
 	if err != nil {
 		return fmt.Errorf("failed to configure remote storage: %w", err)
 	}
