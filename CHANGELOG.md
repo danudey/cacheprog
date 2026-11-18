@@ -11,6 +11,41 @@ The guideline for versioning is as follows:
 - If the change is a new non-breaking feature, increase minor version (e.g. `v1.2.1` -> `v1.3.0`).
 - If the change is not related to new features i.e. bugfixes, dependency upgrades, etc., increase patch version (e.g. `v1.2.0` -> `v1.2.1`).
 
+## [0.2.0](https://github.com/danudey/cacheprog/compare/v0.1.0...v0.2.0) (2026-11-18)
+
+
+### Features
+
+* add --disable-put flag to disable writing to remote storage ([b00901b](https://github.com/danudey/cacheprog/commit/b00901bc04d7d5dab84877917a7a882e2a7e6c81))
+* add ability to exlude headers from signing in s3 client ([34bd085](https://github.com/danudey/cacheprog/commit/34bd085bba2608e14c5e510f436f751321faa4d3))
+* add circuit-breaker for remote storage that trips on consecuitive errors ([a705b7a](https://github.com/danudey/cacheprog/commit/a705b7a38bfd93551248f82066ab8ef5ab6834d4))
+* add half-open state to circuit breaker ([22feeb4](https://github.com/danudey/cacheprog/commit/22feeb43dc139fd4f869ab0fbfcfc2c6b3c17f5a))
+* add half-open state to circuit breaker for remote storage recovery ([dede777](https://github.com/danudey/cacheprog/commit/dede777f4ec603c3ab6fe6b3728f7bfd376d674d))
+* add object signing to defend against cache poisoning ([#1](https://github.com/danudey/cacheprog/issues/1)) ([4fd71e4](https://github.com/danudey/cacheprog/commit/4fd71e4779730c4079493563c9887da0e74a0f0a))
+* add option to ignore misconfigured remote storage ([#21](https://github.com/danudey/cacheprog/issues/21)) ([ac592bb](https://github.com/danudey/cacheprog/commit/ac592bb7e12cf5b606d7bca6542f91dbe37a25cb))
+* add read-only mode to disable writing to remote storage ([da59cb1](https://github.com/danudey/cacheprog/commit/da59cb1206f7e3b90eb78eb4933af71814bbcac2))
+* address PR feedback for read-only mode ([0dea099](https://github.com/danudey/cacheprog/commit/0dea099113483a1d522429befb09d129cc9e589c))
+* rename read-only to disable-put, disable put support at protocol level ([b7427f4](https://github.com/danudey/cacheprog/commit/b7427f42b5046ba0125649b1f909fba7fc9c5dc4))
+
+
+### Bug Fixes
+
+* fix goroutine leak and server deadlock ([8d54c3e](https://github.com/danudey/cacheprog/commit/8d54c3e726b6365276cb9fcb6cca88a6abd16c97))
+* fix goroutine leak and server deadlock ([85ffe2c](https://github.com/danudey/cacheprog/commit/85ffe2cb73c30d13d1a07dfda753f48f01955b08))
+* **signing:** bind signed objects to their cache key ([#18](https://github.com/danudey/cacheprog/issues/18)) ([1eb635e](https://github.com/danudey/cacheprog/commit/1eb635e91b244687ff71e580fa15e087beeed97b))
+
+
+### Performance
+
+* reuse HTTP storage connections and support h2c ([#19](https://github.com/danudey/cacheprog/issues/19)) ([47ecf2f](https://github.com/danudey/cacheprog/commit/47ecf2f137c66c3874c31cf99f65c9248ffc930d))
+
+
+### Documentation
+
+* describe how to run e2e tests using docker cli ([76934be](https://github.com/danudey/cacheprog/commit/76934bec2b8798537f895c25c9fabe52ebc2cf58))
+* introduce CHANGELOG.md ([3b60106](https://github.com/danudey/cacheprog/commit/3b60106798456a1c6446b5a9aa4d3bac72e15bb9))
+* typo in README ([69c5758](https://github.com/danudey/cacheprog/commit/69c5758d4ecea0fdefeff3dfdff68c6c2e90a61a))
+
 ## [Unreleased]
 - HTTP storage (including `cacheprog proxy` clients) now keeps up to 64 idle connections per host instead of net/http's default of 2, cutting new connections per build from ~425 to 16 in a 985-object build (`CACHEPROG_HTTP_STORAGE_MAX_IDLE_CONNS`). New opt-in `CACHEPROG_HTTP_STORAGE_H2C` uses HTTP/2 without TLS to `http://` storage; `cacheprog proxy` now accepts h2c
 - Signing now degrades gracefully for shared CI configs: a blank signing key (e.g. an empty secret) is ignored with a warning and continues verification-only, and when verification keys are configured without a signing key cacheprog switches to read-only mode (remote puts disabled) instead of silently dropping uploads. Lets you ship verification keys to every environment and add signing keys only where the cache should be written
